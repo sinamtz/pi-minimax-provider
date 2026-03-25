@@ -145,12 +145,12 @@ export function streamMiniMax(
 	const modelWithBaseUrl = {
 		...model,
 		baseUrl: MINIMAX_API_BASE,
+		headers: {
+			"x-api-key": "MINIMAX_API_KEY",
+		},
 	};
 
-	return streamSimpleAnthropic(modelWithBaseUrl as Model<"anthropic-messages">, context, {
-		...options,
-		apiKey: "MINIMAX_API_KEY",
-	});
+	return streamSimpleAnthropic(modelWithBaseUrl as Model<"anthropic-messages">, context, options);
 }
 
 // =============================================================================
