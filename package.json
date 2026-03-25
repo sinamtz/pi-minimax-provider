@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "description": "Pi coding agent provider for MiniMax AI - supports MiniMax M2 series models with Anthropic API compatibility",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./index.ts"
+    ".": "./dist/index.js"
   },
   "scripts": {
-    "clean": "echo 'nothing to clean'",
-    "build": "echo 'nothing to build - TypeScript is interpreted by pi'",
-    "check": "tsc --noEmit 2>/dev/null || echo 'TypeScript check skipped'"
+    "clean": "rm -rf dist",
+    "build": "tsc",
+    "check": "tsc --noEmit"
   },
   "engines": {
     "node": ">=18"
@@ -34,13 +34,18 @@
   },
   "homepage": "https://github.com/sinamtz/pi-minimax-provider#readme",
   "files": [
-    "index.ts",
+    "dist",
     "README.md",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ]
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.62.0",
+    "@mariozechner/pi-coding-agent": "^0.62.0",
+    "typescript": "^6.0.2"
   }
 }
