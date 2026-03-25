@@ -1,5 +1,5 @@
 {
-  "name": "pi-minimax-provider",
+  "name": "@sinamtz/pi-minimax-provider",
   "version": "1.0.0",
   "description": "Pi coding agent provider for MiniMax AI - supports MiniMax M2 series models with Anthropic API compatibility",
   "type": "module",
@@ -21,7 +21,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sinamtz/pi-minimax-provider.git"
+    "url": "git+https://github.com/sinamtz/pi-minimax-provider.git"
   },
   "files": [
     "index.ts",
