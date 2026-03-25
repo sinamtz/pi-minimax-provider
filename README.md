@@ -1,5 +1,10 @@
 # Pi Provider - MiniMax
 
+[![npm version](https://img.shields.io/npm/v/@sinamtz/pi-minimax-provider)](https://www.npmjs.com/package/@sinamtz/pi-minimax-provider)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> **Note:** This is an unofficial, community-built provider. It is not affiliated with, endorsed by, or connected to MiniMax.
+
 A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for MiniMax AI's M2 series models.
 
 ## Features
@@ -27,8 +32,8 @@ A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for 
 ### Option 1: Clone and use locally
 
 ```bash
-git clone https://github.com/your-username/pi-provider-minimax.git
-cd pi-provider-minimax
+git clone https://github.com/sinamtz/pi-minimax-provider.git
+cd pi-minimax-provider
 ```
 
 ### Option 2: Install globally

@@ -128,12 +128,14 @@ export const MODELS: MiniMaxModel[] = [
 	},
 ];
 
-const MODEL_MAP = new Map(MODELS.map((m) => [m.id, m]));
-
 // =============================================================================
 // Stream Function
 // =============================================================================
 
+/**
+ * Stream handler for MiniMax models.
+ * Delegates to the built-in Anthropic streaming implementation.
+ */
 export function streamMiniMax(
 	model: Model<Api>,
 	context: Context,
@@ -155,6 +157,10 @@ export function streamMiniMax(
 // Extension Entry Point
 // =============================================================================
 
+/**
+ * Pi extension entry point.
+ * Registers the MiniMax provider with all M2 series models.
+ */
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider("minimax", {
 		baseUrl: MINIMAX_API_BASE,
