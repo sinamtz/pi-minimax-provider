@@ -9,8 +9,10 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "tsc",
-    "check": "tsc --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "check": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "engines": {
     "node": ">=18"
