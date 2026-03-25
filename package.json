@@ -1,0 +1,36 @@
+{
+  "name": "pi-minimax-provider",
+  "version": "1.0.0",
+  "description": "Pi coding agent provider for MiniMax AI - supports MiniMax M2 series models with Anthropic API compatibility",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "clean": "echo 'nothing to clean'",
+    "build": "echo 'nothing to build - TypeScript is interpreted by pi'",
+    "check": "tsc --noEmit 2>/dev/null || echo 'TypeScript check skipped'"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "minimax",
+    "ai",
+    "provider",
+    "extension"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sinamtz/pi-minimax-provider.git"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
