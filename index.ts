@@ -6,12 +6,13 @@
  *
  * Authentication (in order of priority):
  *   1. Pre-resolved API key from SDK's AuthStorage (runtime overrides)
- *   2. API key from ~/.pi/agent/auth.json
+ *   2. API key from ~/.pi/agent/auth.json (via /login or direct edit)
  *   3. MINIMAX_API_KEY environment variable
  *
  * Usage:
- *   # Using auth.json (recommended)
+ *   # Using /login command (recommended)
  *   pi -e ./pi-minimax-provider
+ *   /login minimax  # Prompts for API key, saves to auth.json
  *
  *   # Using environment variable
  *   MINIMAX_API_KEY=your-api-key pi -e ./pi-minimax-provider
@@ -32,6 +33,7 @@ import {
 	type ToolCall,
 } from "@mariozechner/pi-ai";
 import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
 
 // =============================================================================
 // Constants
@@ -504,5 +506,35 @@ export default function (pi: ExtensionAPI) {
 			maxTokens,
 		})),
 		streamSimple: streamMiniMax,
+		oauth: {
+			name: "MiniMax",
+      async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+				const apiKey = await callbacks.onPrompt({
+					message: "Enter your MiniMax API key:",
+				});
+				if (!apiKey || apiKey.trim() === "") {
+					throw new Error("API key is required");
+				}
+				return {
+					// Store API key in access field (no refresh token for simple API key auth)
+					access: apiKey.trim(),
+					refresh: "",
+					// Far future expiration (API keys don't expire unless user rotates them)
+					expires: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10, // 10 years
+				};
+			},
+      async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+				// API keys don't expire, but this is called by the SDK periodically
+				// Return credentials as-is if they're not expired
+				if (credentials.expires > Date.now()) {
+					return credentials;
+				}
+				// If expired, return empty to trigger re-login
+				return { access: "", refresh: "", expires: 0 };
+			},
+      getApiKey(credentials: OAuthCredentials): string {
+				return credentials.access;
+			},
+		},
 	});
 }
