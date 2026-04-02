@@ -135,7 +135,7 @@ For the most current pricing, see the [MiniMax pricing page](https://platform.mi
 ### Authentication errors
 - Check your MiniMax API key is valid
 - Ensure you have credits/quota available in your MiniMax account
-- If using `/login`, try re-authenticating: `/login minimax`
+- If using `/login`, try re-authenticating: `/logout -> MiniMax` then `/login -> MiniMax`
 
 ## License
 
