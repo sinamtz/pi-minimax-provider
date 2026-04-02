@@ -12,7 +12,7 @@
  * Usage:
  *   # Using /login command (recommended)
  *   pi -e ./pi-minimax-provider
- *   /login minimax  # Prompts for API key, saves to auth.json
+ *   /login -> minimax  # Prompts for API key, saves to auth.json
  *
  *   # Using environment variable
  *   MINIMAX_API_KEY=your-api-key pi -e ./pi-minimax-provider
