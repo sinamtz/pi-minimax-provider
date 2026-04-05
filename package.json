@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsc -p tsconfig.build.json --watch",
     "check": "tsc --noEmit",
+    "lint": "eslint *.ts",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "engines": {
@@ -48,6 +49,9 @@
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.62.0",
     "@mariozechner/pi-coding-agent": "^0.62.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.2.0",
     "typescript": "^6.0.2"
   }
 }
