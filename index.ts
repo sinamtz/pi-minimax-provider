@@ -151,26 +151,38 @@ export const MODELS: MiniMaxModel[] = [
  * 2. Direct AuthStorage lookup (auth.json)
  * 3. Environment variable fallback
  */
+export function cleanApiKey(apiKey: string): string {
+	// Strip oauth: prefix if present (SDK stores OAuth tokens as "oauth:sk-...")
+	if (apiKey.startsWith("oauth:")) {
+		return apiKey.slice(6);
+	}
+	return apiKey;
+}
+
 async function getMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
+	let apiKey = "";
+
 	// 1. Use SDK pre-resolved API key if available
 	if (options?.apiKey) {
-		return options.apiKey;
-	}
-
-	// 2. Fall back to AuthStorage reading from auth.json
-	// Priority: runtime overrides > auth.json > environment variables
-	try {
-		const authStorage = AuthStorage.create();
-		const apiKey = await authStorage.getApiKey("minimax");
-		if (apiKey) {
-			return apiKey;
+		apiKey = options.apiKey;
+	} else {
+		// 2. Fall back to AuthStorage reading from auth.json
+		// Priority: runtime overrides > auth.json > environment variables
+		try {
+			const authStorage = AuthStorage.create();
+			apiKey = await authStorage.getApiKey("minimax") || "";
+		} catch {
+			// AuthStorage not available or auth.json not found, continue to env fallback
 		}
-	} catch {
-		// AuthStorage not available or auth.json not found, continue to env fallback
+
+		// 3. Last resort: environment variable
+		if (!apiKey) {
+			apiKey = process.env.MINIMAX_API_KEY || "";
+		}
 	}
 
-	// 3. Last resort: environment variable
-	return process.env.MINIMAX_API_KEY || "";
+	// 4. Clean OAuth prefix from token (e.g., "oauth:sk-..." -> "sk-...")
+	return cleanApiKey(apiKey);
 }
 
 function mapStopReason(reason: string | undefined): StopReason {

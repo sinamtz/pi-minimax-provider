@@ -1,0 +1,12 @@
+{
+  "issues": [
+    {
+      "id": "fragility-fragility-mnld1dij",
+      "description": "The agent encountered a clear error (npm version command failed because tag 'v1.0.6' already exists) but provided no response, leaving the user without any explanation, resolution, or guidance on how to handle the git tag conflict.",
+      "status": "open",
+      "category": "fragility",
+      "priority": "warning",
+      "source": "monitor"
+    }
+  ]
+}
