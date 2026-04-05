@@ -137,6 +137,22 @@ For the most current pricing, see the [MiniMax pricing page](https://platform.mi
 - Ensure you have credits/quota available in your MiniMax account
 - If using `/login`, try re-authenticating: `/logout -> MiniMax` then `/login -> MiniMax`
 
+## Changelog
+
+### v1.0.8
+- **Fix**: Strip `oauth:` prefix from API keys to prevent 401 authentication errors
+- Add vitest unit tests for API key cleaning
+
+### v1.0.7
+- Add ESLint with TypeScript support
+- Add lint script to npm run commands
+
+### v1.0.6
+- Add auth.json support via `/login minimax` command
+
+### v1.0.3
+- Initial release
+
 ## License
 
 MIT
