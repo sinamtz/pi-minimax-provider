@@ -46,11 +46,42 @@ npm install -g pi-provider-minimax
 
 ### Set your API key
 
+Get your API key from the [MiniMax Platform](https://platform.minimax.io/user-center/basic-information/interface-key).
+
+There are three ways to set your API key (in order of priority):
+
+#### Option 1: Using `/login` (Recommended)
+
+The easiest way is to use pi's built-in login command:
+
 ```bash
-export MINIMAX_API_KEY=your-api-key-here
+pi -e ./pi-minimax-provider
+/login
 ```
 
-Get your API key from the [MiniMax Platform](https://platform.minimax.io/user-center/basic-information/interface-key).
+This will prompt you to enter your API key, which is then securely stored in `~/.pi/agent/auth.json`.
+
+#### Option 2: Edit auth.json manually
+
+Add your API key directly to the auth file:
+
+```json
+{
+  "providers": {
+    "minimax": {
+      "access": "your-api-key-here",
+      "expires": 1935753600000
+    }
+  }
+}
+```
+
+#### Option 3: Environment variable
+
+```bash
+export MINIMAX_API_KEY=your-api-key-here
+pi -e ./pi-minimax-provider
+```
 
 ### Run pi with the extension
 
@@ -91,18 +122,20 @@ For the most current pricing, see the [MiniMax pricing page](https://platform.mi
 
 - **Base URL**: `https://api.minimax.io/anthropic`
 - **Protocol**: Anthropic Messages API compatible
-- **Authentication**: Bearer token via `MINIMAX_API_KEY` environment variable
+- **Authentication**: Bearer token
+  - Priority: auth.json (via `/login`) > environment variable `MINIMAX_API_KEY`
 - **Streaming**: Full streaming support
 
 ## Troubleshooting
 
 ### "Model not found" error
-- Ensure you've set `MINIMAX_API_KEY` correctly
+- Ensure you've set up authentication (see [Set your API key](#set-your-api-key))
 - Verify the extension path is correct when using `-e`
 
 ### Authentication errors
 - Check your MiniMax API key is valid
 - Ensure you have credits/quota available in your MiniMax account
+- If using `/login`, try re-authenticating: `/logout -> MiniMax` then `/login -> MiniMax`
 
 ## License
 

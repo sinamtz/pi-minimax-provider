@@ -4,11 +4,17 @@
  * Provides access to MiniMax AI models through their Anthropic-compatible API.
  * Custom streaming implementation with Bearer token auth.
  *
- * Usage:
- *   pi -e ./pi-minimax-provider
- *   # Then set MINIMAX_API_KEY=your-api-key
+ * Authentication (in order of priority):
+ *   1. Pre-resolved API key from SDK's AuthStorage (runtime overrides)
+ *   2. API key from ~/.pi/agent/auth.json (via /login or direct edit)
+ *   3. MINIMAX_API_KEY environment variable
  *
- * Or with environment variable:
+ * Usage:
+ *   # Using /login command (recommended)
+ *   pi -e ./pi-minimax-provider
+ *   /login -> minimax  # Prompts for API key, saves to auth.json
+ *
+ *   # Using environment variable
  *   MINIMAX_API_KEY=your-api-key pi -e ./pi-minimax-provider
  */
 
@@ -26,7 +32,8 @@ import {
 	type ThinkingContent,
 	type ToolCall,
 } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
 
 // =============================================================================
 // Constants
@@ -135,8 +142,36 @@ export const MODELS: MiniMaxModel[] = [
 ];
 
 // =============================================================================
-// Stream Function
+// API Key Resolution
 // =============================================================================
+
+/**
+ * Get the MiniMax API key using SDK's priority chain:
+ * 1. Pre-resolved API key from options (SDK AuthStorage)
+ * 2. Direct AuthStorage lookup (auth.json)
+ * 3. Environment variable fallback
+ */
+async function getMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
+	// 1. Use SDK pre-resolved API key if available
+	if (options?.apiKey) {
+		return options.apiKey;
+	}
+
+	// 2. Fall back to AuthStorage reading from auth.json
+	// Priority: runtime overrides > auth.json > environment variables
+	try {
+		const authStorage = AuthStorage.create();
+		const apiKey = await authStorage.getApiKey("minimax");
+		if (apiKey) {
+			return apiKey;
+		}
+	} catch {
+		// AuthStorage not available or auth.json not found, continue to env fallback
+	}
+
+	// 3. Last resort: environment variable
+	return process.env.MINIMAX_API_KEY || "";
+}
 
 function mapStopReason(reason: string | undefined): StopReason {
 	switch (reason) {
@@ -309,8 +344,8 @@ export function streamMiniMax(
 				};
 			}
 
-			// Prepare request - USE BEARER TOKEN
-			const apiKey = options?.apiKey || process.env.MINIMAX_API_KEY || "";
+				// Get API key using SDK's priority chain (auth.json checked when env var not set)
+			const apiKey = await getMiniMaxApiKey(options);
 			const baseUrl = model.baseUrl || MINIMAX_API_BASE;
 			const requestUrl = `${baseUrl}/v1/messages`;
 			const requestHeaders = {
@@ -471,5 +506,35 @@ export default function (pi: ExtensionAPI) {
 			maxTokens,
 		})),
 		streamSimple: streamMiniMax,
+		oauth: {
+			name: "MiniMax",
+      async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+				const apiKey = await callbacks.onPrompt({
+					message: "Enter your MiniMax API key:",
+				});
+				if (!apiKey || apiKey.trim() === "") {
+					throw new Error("API key is required");
+				}
+				return {
+					// Store API key in access field (no refresh token for simple API key auth)
+					access: apiKey.trim(),
+					refresh: "",
+					// Far future expiration (API keys don't expire unless user rotates them)
+					expires: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10, // 10 years
+				};
+			},
+      async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+				// API keys don't expire, but this is called by the SDK periodically
+				// Return credentials as-is if they're not expired
+				if (credentials.expires > Date.now()) {
+					return credentials;
+				}
+				// If expired, return empty to trigger re-login
+				return { access: "", refresh: "", expires: 0 };
+			},
+      getApiKey(credentials: OAuthCredentials): string {
+				return credentials.access;
+			},
+		},
 	});
 }
