@@ -19,7 +19,18 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": "[\"pi\", \"pi-package\", \"extension\", \"minimax\", \"minimax-ai\", \"minimax-provider\", \"minimaxio\", \"provider\", \"authentication\", \"token\"]",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "extension",
+    "minimax",
+    "minimax-ai",
+    "minimax-provider",
+    "minimaxio",
+    "provider",
+    "authentication",
+    "token"
+  ],
   "author": {
     "name": "Sina Montazeri",
     "url": "https://github.com/sinamtz"
