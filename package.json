@@ -1,6 +1,6 @@
 {
   "name": "@sinamtz/pi-minimax-provider",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Pi coding agent provider for MiniMax AI - supports MiniMax M2 series models with Anthropic API compatibility",
   "type": "module",
   "main": "dist/index.js",
