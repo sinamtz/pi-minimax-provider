@@ -30,3 +30,7 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# Pi agent
+.pi/
+.project/
