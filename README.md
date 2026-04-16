@@ -29,17 +29,29 @@ A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for 
 
 ## Installation
 
-### Option 1: Clone and use locally
+### Option 1: Using pi install (npm)
+
+```bash
+pi install npm:@sinamtz/pi-minimax-provider
+```
+
+### Option 2: Using pi install (git)
+
+```bash
+pi install git:https://github.com/sinamtz/pi-minimax-provider
+```
+
+### Option 3: Install globally via npm
+
+```bash
+npm install -g @sinamtz/pi-minimax-provider
+```
+
+### Option 4: Clone locally
 
 ```bash
 git clone https://github.com/sinamtz/pi-minimax-provider.git
 cd pi-minimax-provider
-```
-
-### Option 2: Install globally
-
-```bash
-npm install -g pi-provider-minimax
 ```
 
 ## Usage
