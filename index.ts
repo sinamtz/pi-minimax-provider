@@ -519,7 +519,7 @@ export function streamMiniMax(
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider("minimax", {
 		baseUrl: MINIMAX_API_BASE,
-		apiKey: "MINIMAX_API_KEY",
+		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
 		models: MODELS.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
 			id,
