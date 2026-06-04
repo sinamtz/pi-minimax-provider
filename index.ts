@@ -632,6 +632,39 @@ export function streamMiniMax(
 				}
 			}
 
+			// MiniMax is stricter than some Anthropic-compatible endpoints: when an
+			// assistant turn emits multiple tool_use blocks, the immediately following
+			// user message must contain the corresponding tool_result blocks in the same
+			// order. Pi can record parallel tool results in completion order, so normalize
+			// each tool-result message against the preceding assistant tool_use order.
+			for (let i = 1; i < messages.length; i++) {
+				const current = messages[i];
+				const previous = messages[i - 1];
+				if (current.role !== "user" || previous.role !== "assistant"
+					|| !Array.isArray(current.content) || !Array.isArray(previous.content)
+					|| !current.content.every((block) => (block as { type?: string }).type === "tool_result")) {
+					continue;
+				}
+
+				const toolUseOrder = new Map<string, number>();
+				previous.content.forEach((block, index) => {
+					const typed = block as { type?: string; id?: string };
+					if (typed.type === "tool_use" && typeof typed.id === "string") {
+						toolUseOrder.set(typed.id, index);
+					}
+				});
+
+				if (toolUseOrder.size > 1) {
+					current.content.sort((a, b) => {
+						const aId = (a as { tool_use_id?: string }).tool_use_id;
+						const bId = (b as { tool_use_id?: string }).tool_use_id;
+						const aOrder = typeof aId === "string" ? toolUseOrder.get(aId) : undefined;
+						const bOrder = typeof bId === "string" ? toolUseOrder.get(bId) : undefined;
+						return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER);
+					});
+				}
+			}
+
 			// Build tools
 			const tools = context.tools?.map((tool) => ({
 				name: tool.name,
