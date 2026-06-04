@@ -359,12 +359,25 @@ export function streamMiniMax(
 				// Get API key using SDK's priority chain (auth.json checked when env var not set)
 			const apiKey = await getMiniMaxApiKey(options);
 			const baseUrl = model.baseUrl || MINIMAX_API_BASE;
-			const requestUrl = `${baseUrl}/v1/messages`;
-			const requestHeaders = {
+			
+			// Safely append /v1/messages without breaking query parameters (e.g., ?GroupId=...)
+			const url = new URL(baseUrl);
+			if (!url.pathname.endsWith("/v1/messages")) {
+				url.pathname = url.pathname.replace(/\/$/, "") + "/v1/messages";
+			}
+			const requestUrl = url.toString();
+
+			const requestHeaders: Record<string, string> = {
 				"Authorization": `Bearer ${apiKey}`,
 				"anthropic-version": "2023-06-01",
 				"Content-Type": "application/json",
+				...(model.headers || {})
 			};
+			
+			if (options && 'headers' in options && options.headers) {
+				Object.assign(requestHeaders, options.headers);
+			}
+
 			const requestBody = JSON.stringify(body);
 
 			const response = await fetch(requestUrl, {
@@ -507,7 +520,6 @@ export default function (pi: ExtensionAPI) {
 	pi.registerProvider("minimax", {
 		baseUrl: MINIMAX_API_BASE,
 		apiKey: "MINIMAX_API_KEY",
-		authHeader: true,
 		api: "anthropic-messages",
 		models: MODELS.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
 			id,
