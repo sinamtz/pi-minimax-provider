@@ -1,7 +1,7 @@
 {
   "name": "@sinamtz/pi-minimax-provider",
   "version": "1.1.2",
-  "description": "Pi coding agent provider for MiniMax AI - supports MiniMax M2 series models with Anthropic API compatibility",
+  "description": "Pi coding agent provider for MiniMax AI with M3, Anthropic-compatible streaming, and native MiniMax tools",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -62,5 +62,8 @@
     "eslint": "^10.2.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
   }
 }
