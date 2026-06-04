@@ -606,15 +606,29 @@ export function streamMiniMax(
 						return null;
 					}).filter(Boolean);
 
-					messages.push({
-						role: "user",
-						content: [{
-							type: "tool_result",
-							tool_use_id: msg.toolCallId,
-							content: content.length > 0 ? content : [{ type: "text", text: "" }],
-							is_error: msg.isError,
-						}],
-					});
+					const toolResultBlock = {
+						type: "tool_result",
+						tool_use_id: msg.toolCallId,
+						content: content.length > 0 ? content : [{ type: "text", text: "" }],
+						is_error: msg.isError,
+					};
+
+					// Pi records each tool result as its own `toolResult` message. The
+					// Anthropic/MiniMax Messages API requires all results for a multi-tool
+					// assistant turn to be in the immediately-following user message. If we
+					// emit one user message per result, the second result no longer directly
+					// follows the assistant tool_use turn and MiniMax returns:
+					// "tool call result does not follow tool call".
+					const previous = messages[messages.length - 1];
+					if (previous?.role === "user" && Array.isArray(previous.content)
+						&& previous.content.every((block) => (block as { type?: string }).type === "tool_result")) {
+						previous.content.push(toolResultBlock);
+					} else {
+						messages.push({
+							role: "user",
+							content: [toolResultBlock],
+						});
+					}
 				}
 			}
 
