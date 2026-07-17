@@ -21,7 +21,7 @@
 import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { MiniMaxSDK, type Region } from "mmx-cli/sdk";
