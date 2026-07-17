@@ -8,6 +8,7 @@ import registerMiniMax, {
 	cleanApiKey,
 	formatVoiceList,
 	getImageMimeType,
+	getMiniMaxApiBase,
 	getMiniMaxApiHost,
 	imageSourceToDataUrl,
 	resolveAudioOutputPath,
@@ -58,6 +59,18 @@ describe("MiniMax host and JSON helper", () => {
 		expect(getMiniMaxApiHost()).toBe("https://api.minimax.io");
 		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com/";
 		expect(getMiniMaxApiHost()).toBe("https://api.minimaxi.com");
+	});
+
+	it("getMiniMaxApiBase honors MINIMAX_API_HOST for the streaming endpoint", () => {
+		delete process.env.MINIMAX_API_HOST;
+		expect(getMiniMaxApiBase()).toBe("https://api.minimax.io/anthropic");
+
+		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com";
+		expect(getMiniMaxApiBase()).toBe("https://api.minimaxi.com/anthropic");
+
+		// Trailing slash on the override is normalized away.
+		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com/";
+		expect(getMiniMaxApiBase()).toBe("https://api.minimaxi.com/anthropic");
 	});
 
 	it("posts JSON and parses successful MiniMax responses", async () => {
