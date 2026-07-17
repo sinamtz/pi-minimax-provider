@@ -213,6 +213,21 @@ export function getMiniMaxApiHost(): string {
 	return (process.env.MINIMAX_API_HOST || MINIMAX_API_HOST).replace(/\/$/, "");
 }
 
+/**
+ * The MiniMax Anthropic-compatible endpoint base URL, honoring MINIMAX_API_HOST.
+ *
+ * Call this at request time (rather than caching MINIMAX_API_BASE at module
+ * load) so users can switch regions by changing the env var, e.g.:
+ *
+ *   MINIMAX_API_HOST=https://api.minimaxi.com pi ...
+ *
+ * Use this in `streamMiniMax` and any future request builders; the native
+ * tool helpers already use it via `callMiniMaxJson`.
+ */
+export function getMiniMaxApiBase(): string {
+	return `${getMiniMaxApiHost()}/anthropic`;
+}
+
 export async function getRequiredMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
 	const apiKey = await getMiniMaxApiKey(options);
 	if (!apiKey) {
@@ -759,7 +774,12 @@ export function streamMiniMax(
 
 				// Get API key using SDK's priority chain (auth.json checked when env var not set)
 			const apiKey = await getMiniMaxApiKey(options);
-			const baseUrl = model.baseUrl || MINIMAX_API_BASE;
+			// Resolve the base URL at request time so MINIMAX_API_HOST env var
+			// changes are honored.  model.baseUrl is also overridden if it points
+			// at the default MINIMAX_API_BASE so a host-override env var always wins.
+			const defaultBase = getMiniMaxApiBase();
+			const modelBase = model.baseUrl && model.baseUrl !== MINIMAX_API_BASE ? model.baseUrl : undefined;
+			const baseUrl = modelBase || defaultBase;
 			
 			// Safely append /v1/messages without breaking query parameters (e.g., ?GroupId=...)
 			const url = new URL(baseUrl);
