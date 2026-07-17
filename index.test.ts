@@ -9,6 +9,7 @@ import registerMiniMax, {
 	getImageMimeType,
 	getMiniMaxApiBase,
 	getMiniMaxApiHost,
+	getRequiredMiniMaxApiKey,
 	imageSourceToDataUrl,
 	resolveAudioOutputPath,
 	resolveSpeechOptions,
@@ -23,15 +24,131 @@ afterEach(() => {
 	delete process.env.MINIMAX_MCP_BASE_PATH;
 });
 
+// =============================================================================
+// Test helpers
+// =============================================================================
+
+type RegisteredTool = { execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }> };
+
+type ProviderCall = {
+	name: string;
+	config: {
+		name?: string;
+		baseUrl?: string;
+		apiKey?: string;
+		api?: string;
+		streamSimple?: unknown;
+		models?: Array<{
+			id: string;
+			name: string;
+			reasoning: boolean;
+			input: string[];
+			cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+			contextWindow: number;
+			maxTokens: number;
+			compat?: { forceAdaptiveThinking?: boolean };
+		}>;
+		oauth?: unknown;
+	};
+};
+
+function captureRegistration() {
+	const tools: Record<string, RegisteredTool> = {};
+	const providers: ProviderCall[] = [];
+	const pi = {
+		registerTool(tool: { name: string; execute: RegisteredTool["execute"] }) {
+			tools[tool.name] = tool;
+		},
+		registerProvider(name: string, config: ProviderCall["config"]) {
+			providers.push({ name, config });
+		},
+	};
+	registerMiniMax(pi as never);
+	return { tools, providers };
+}
+
 describe("models", () => {
-	it("includes MiniMax-M3 with 1M context and image input", () => {
+	it("includes MiniMax-M3 with 1M context, 524288 maxTokens, and image input", () => {
+		// M3 is the headline model.  The README documents pricing of $0.60 / $2.40
+		// per million tokens at ≤512k input, a 1M-token context window, and a
+		// 524288-token max output cap.  The built-in minimax provider in pi-ai has
+		// 0.30 / 1.20 pricing and 128000 maxTokens — this extension overrides those
+		// so cost tracking and output budgets match the documented limits.
 		const m3 = MODELS.find((model) => model.id === "MiniMax-M3");
 		expect(m3).toMatchObject({
 			contextWindow: 1000000,
 			maxTokens: 524288,
 			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0.60, output: 2.40, cacheRead: 0.12, cacheWrite: 0 },
 		});
-		expect(m3?.input).toContain("image");
+	});
+
+	it("includes the full M2 series with M2.7, M2.5, M2.1, and M2 base variants", () => {
+		// The built-in pi-ai provider only ships M2.7 / M2.7-highspeed / M3.  This
+		// extension adds the older M2.5, M2.1, and M2 variants so users on the
+		// documented pricing tiers can pick the model they pay for.
+		const ids = MODELS.map((m) => m.id).sort();
+		expect(ids).toEqual([
+			"MiniMax-M2",
+			"MiniMax-M2.1",
+			"MiniMax-M2.1-highspeed",
+			"MiniMax-M2.5",
+			"MiniMax-M2.5-highspeed",
+			"MiniMax-M2.7",
+			"MiniMax-M2.7-highspeed",
+			"MiniMax-M3",
+		]);
+	});
+
+	it("uses the README-documented pricing for every model", () => {
+		// Snapshot test: any drift here means the pricing page in the README
+		// needs to be updated alongside the code change.
+		const expected: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
+			"MiniMax-M3": { input: 0.60, output: 2.40, cacheRead: 0.12, cacheWrite: 0 },
+			"MiniMax-M2.7": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0.375 },
+			"MiniMax-M2.7-highspeed": { input: 0.60, output: 2.40, cacheRead: 0.06, cacheWrite: 0.375 },
+			"MiniMax-M2.5": { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0.375 },
+			"MiniMax-M2.5-highspeed": { input: 0.60, output: 2.40, cacheRead: 0.03, cacheWrite: 0.375 },
+			"MiniMax-M2.1": { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0.375 },
+			"MiniMax-M2.1-highspeed": { input: 0.60, output: 2.40, cacheRead: 0.03, cacheWrite: 0.375 },
+			"MiniMax-M2": { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0.375 },
+		};
+		for (const model of MODELS) {
+			expect(model.cost).toEqual(expected[model.id]);
+		}
+	});
+
+	it("caps M2.x maxTokens at 65536 (the documented M2 recommendation)", () => {
+		// The README says M2-series max_tokens is configured to MiniMax's
+		// recommended cap of 65,536.  Built-in pi-ai ships 131072 for M2.7,
+		// which exceeds what we should be sending.
+		const m2 = MODELS.filter((m) => m.id.startsWith("MiniMax-M2"));
+		expect(m2.length).toBeGreaterThan(0);
+		for (const model of m2) {
+			expect(model.maxTokens).toBe(65536);
+		}
+	});
+
+	it("marks M3 as multimodal and M2.x as text-only", () => {
+		const m3 = MODELS.find((m) => m.id === "MiniMax-M3");
+		expect(m3?.input).toEqual(["text", "image"]);
+
+		const m2 = MODELS.filter((m) => m.id.startsWith("MiniMax-M2"));
+		for (const model of m2) {
+			expect(model.input).toEqual(["text"]);
+		}
+	});
+
+	it("flags highspeed variants with speed=\"highspeed\"", () => {
+		const highspeed = MODELS.filter((m) => m.id.endsWith("-highspeed"));
+		const standard = MODELS.filter((m) => !m.id.endsWith("-highspeed") && m.id !== "MiniMax-M3");
+		for (const model of highspeed) {
+			expect(model.speed).toBe("highspeed");
+		}
+		for (const model of standard) {
+			expect(model.speed).toBe("standard");
+		}
 	});
 });
 
@@ -42,16 +159,30 @@ describe("MiniMax host and JSON helper", () => {
 		expect(getMiniMaxApiHost()).toBe("https://api.minimaxi.com");
 	});
 
-	it("getMiniMaxApiBase honors MINIMAX_API_HOST for the streaming endpoint", () => {
+	it("getMiniMaxApiBase appends /anthropic and honors MINIMAX_API_HOST", () => {
 		delete process.env.MINIMAX_API_HOST;
 		expect(getMiniMaxApiBase()).toBe("https://api.minimax.io/anthropic");
 
 		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com";
 		expect(getMiniMaxApiBase()).toBe("https://api.minimaxi.com/anthropic");
 
-		// Trailing slash on the override is normalized away.
+		// Trailing slash on the host override is normalized so we never end up
+		// with "https://api.minimaxi.com//anthropic".
 		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com/";
 		expect(getMiniMaxApiBase()).toBe("https://api.minimaxi.com/anthropic");
+	});
+
+	it("getRequiredMiniMaxApiKey prefers options.apiKey over env", async () => {
+		process.env.MINIMAX_API_KEY = "from-env";
+		await expect(getRequiredMiniMaxApiKey({ apiKey: "from-options" })).resolves.toBe("from-options");
+	});
+
+	it("getRequiredMiniMaxApiKey falls back to MINIMAX_API_KEY env", async () => {
+		delete process.env.MINIMAX_API_KEY;
+		await expect(getRequiredMiniMaxApiKey()).rejects.toThrow(/MiniMax API key is required/);
+
+		process.env.MINIMAX_API_KEY = "from-env";
+		await expect(getRequiredMiniMaxApiKey()).resolves.toBe("from-env");
 	});
 
 	it("posts JSON and parses successful MiniMax responses", async () => {
@@ -150,18 +281,8 @@ describe("speech helpers", () => {
 });
 
 describe("registered tools", () => {
-	type RegisteredTool = { execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }> };
-
 	function registeredTools() {
-		const tools: Record<string, RegisteredTool> = {};
-		const pi = {
-			registerTool(tool: { name: string; execute: RegisteredTool["execute"] }) {
-				tools[tool.name] = tool;
-			},
-			registerProvider: vi.fn(),
-		};
-		registerMiniMax(pi as never);
-		return tools;
+		return captureRegistration().tools;
 	}
 
 	it("registers native MiniMax tools", () => {
@@ -197,3 +318,74 @@ describe("registered tools", () => {
 });
 
 // =============================================================================
+// Provider registration
+// =============================================================================
+//
+// These tests cover the structural correctness of the provider registration.
+// The streaming/auth/host overrides are exercised by their dedicated suites.
+
+describe("provider registration", () => {
+	function provider() {
+		return captureRegistration().providers[0];
+	}
+
+	it("registers exactly one provider with id 'minimax'", () => {
+		const { providers } = captureRegistration();
+		expect(providers).toHaveLength(1);
+		expect(providers[0].name).toBe("minimax");
+	});
+
+	it("uses api: 'anthropic-messages' so the SDK's anthropicMessagesApi handles streaming", () => {
+		expect(provider().config.api).toBe("anthropic-messages");
+	});
+
+	it("uses env-interpolation syntax ($MINIMAX_API_KEY) for the apiKey field", () => {
+		// Without the leading "$", the SDK's resolveConfigValue treats the string
+		// as a literal API key and would send "MINIMAX_API_KEY" as the Bearer
+		// token — guaranteeing a 401 if auth.json is ever missing.
+		expect(provider().config.apiKey).toBe("$MINIMAX_API_KEY");
+	});
+
+	it("sets baseUrl to the env-aware /anthropic endpoint", () => {
+		delete process.env.MINIMAX_API_HOST;
+		expect(captureRegistration().providers[0].config.baseUrl).toBe("https://api.minimax.io/anthropic");
+
+		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com";
+		expect(captureRegistration().providers[0].config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
+	});
+
+	it("wires anthropicMessagesApi().streamSimple as the streaming implementation", () => {
+		const streamSimple = provider().config.streamSimple;
+		expect(typeof streamSimple).toBe("function");
+	});
+
+	it("registers all 8 MiniMax models from MODELS, with id/name/cost/contextWindow/maxTokens preserved", () => {
+		const registered = provider().config.models ?? [];
+		expect(registered).toHaveLength(MODELS.length);
+
+		for (const source of MODELS) {
+			const found = registered.find((m) => m.id === source.id);
+			expect(found, `expected ${source.id} to be registered`).toBeDefined();
+			expect(found).toMatchObject({
+				id: source.id,
+				name: source.name,
+				reasoning: source.reasoning,
+				input: source.input,
+				cost: source.cost,
+				contextWindow: source.contextWindow,
+				maxTokens: source.maxTokens,
+			});
+		}
+	});
+
+	it("enables compat.forceAdaptiveThinking on M3 only", () => {
+		const registered = provider().config.models ?? [];
+		for (const model of registered) {
+			if (model.id === "MiniMax-M3") {
+				expect(model.compat).toEqual({ forceAdaptiveThinking: true });
+			} else {
+				expect(model.compat).toBeUndefined();
+			}
+		}
+	});
+});
