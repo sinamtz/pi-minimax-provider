@@ -6,7 +6,6 @@ import registerMiniMax, {
 	buildAnthropicMessages,
 	buildTextToAudioPayload,
 	callMiniMaxJson,
-	cleanApiKey,
 	formatVoiceList,
 	getImageMimeType,
 	getMiniMaxApiBase,
@@ -23,24 +22,6 @@ afterEach(() => {
 	delete process.env.MINIMAX_API_HOST;
 	delete process.env.MINIMAX_API_KEY;
 	delete process.env.MINIMAX_MCP_BASE_PATH;
-});
-
-describe("cleanApiKey", () => {
-	it("strips oauth: prefix", () => {
-		expect(cleanApiKey("oauth:sk-1234567890abcdef")).toBe("sk-1234567890abcdef");
-	});
-
-	it("passes through regular API keys unchanged", () => {
-		expect(cleanApiKey("sk-1234567890abcdef")).toBe("sk-1234567890abcdef");
-	});
-
-	it("handles empty string", () => {
-		expect(cleanApiKey("")).toBe("");
-	});
-
-	it("handles keys without oauth prefix", () => {
-		expect(cleanApiKey("sk-test-key")).toBe("sk-test-key");
-	});
 });
 
 describe("models", () => {

@@ -33,7 +33,7 @@ import {
 	type ToolCall,
 	StringEnum,
 } from "@earendil-works/pi-ai";
-import { AuthStorage, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -170,43 +170,19 @@ export const MODELS: MiniMaxModel[] = [
 // =============================================================================
 
 /**
- * Get the MiniMax API key using SDK's priority chain:
- * 1. Pre-resolved API key from options (SDK AuthStorage)
- * 2. Direct AuthStorage lookup (auth.json)
- * 3. Environment variable fallback
+ * Resolve the MiniMax API key for the native tools (web search, TTS, vision).
+ *
+ * The streaming path (`streamMiniMax`) does NOT call this — the SDK already
+ * resolves `options.apiKey` via AuthStorage + provider-scoped env before
+ * invoking `streamSimple`, so any logic here would be dead code there.
+ *
+ * Priority:
+ * 1. `options.apiKey` — SDK pre-resolved key (covers runtime overrides, login,
+ *    and provider-scoped env)
+ * 2. `process.env.MINIMAX_API_KEY` — ambient env fallback
  */
-export function cleanApiKey(apiKey: string): string {
-	// Strip oauth: prefix if present (SDK stores OAuth tokens as "oauth:sk-...")
-	if (apiKey.startsWith("oauth:")) {
-		return apiKey.slice(6);
-	}
-	return apiKey;
-}
-
 async function getMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
-	let apiKey = "";
-
-	// 1. Use SDK pre-resolved API key if available
-	if (options?.apiKey) {
-		apiKey = options.apiKey;
-	} else {
-		// 2. Fall back to AuthStorage reading from auth.json
-		// Priority: runtime overrides > auth.json > environment variables
-		try {
-			const authStorage = AuthStorage.create();
-			apiKey = await authStorage.getApiKey("minimax") || "";
-		} catch {
-			// AuthStorage not available or auth.json not found, continue to env fallback
-		}
-
-		// 3. Last resort: environment variable
-		if (!apiKey) {
-			apiKey = process.env.MINIMAX_API_KEY || "";
-		}
-	}
-
-	// 4. Clean OAuth prefix from token (e.g., "oauth:sk-..." -> "sk-...")
-	return cleanApiKey(apiKey);
+	return options?.apiKey ?? process.env.MINIMAX_API_KEY ?? "";
 }
 
 export function getMiniMaxApiHost(): string {
@@ -1095,7 +1071,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerProvider("minimax", {
 		baseUrl: MINIMAX_API_BASE,
-		apiKey: "MINIMAX_API_KEY",
+		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
 		models: MODELS.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
 			id,
