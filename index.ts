@@ -19,22 +19,11 @@
  */
 
 import {
-	createAssistantMessageEventStream,
-	calculateCost,
-	type Api,
-	type AssistantMessage,
-	type AssistantMessageEventStream,
-	type Context,
-	type Model,
-	type SimpleStreamOptions,
-	type StopReason,
-	type TextContent,
-	type ThinkingContent,
-	type ToolCall,
 	StringEnum,
+	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
@@ -46,7 +35,6 @@ import { dirname, extname, resolve } from "node:path";
 // =============================================================================
 
 const MINIMAX_API_HOST = "https://api.minimax.io";
-const MINIMAX_API_BASE = `${MINIMAX_API_HOST}/anthropic`;
 const MINIMAX_API_SOURCE = "Pi-MiniMax-Provider";
 
 // =============================================================================
@@ -65,9 +53,7 @@ interface MiniMaxModel {
 	speed: "standard" | "highspeed";
 }
 
-function getRecommendedMaxTokens(model: { id: string }): number {
-	return model.id === "MiniMax-M3" ? 131072 : 65536;
-}
+
 
 export const MODELS: MiniMaxModel[] = [
 	// MiniMax M3
@@ -166,46 +152,42 @@ export const MODELS: MiniMaxModel[] = [
 ];
 
 // =============================================================================
-// API Key Resolution
+// API Key + Host Resolution
 // =============================================================================
+//
+// The MiniMax Anthropic-compatible endpoint is reached via the SDK's built-in
+// anthropicMessagesApi, which already authenticates via envApiKeyAuth. This
+// helper exists only for the native tools (web search, TTS, vision) which run
+// outside the SDK's auth resolution.
+//
+// For streaming, registerProvider wires up envApiKeyAuth("MINIMAX_API_KEY")
+// and the SDK handles the rest.
 
 /**
- * Resolve the MiniMax API key for the native tools (web search, TTS, vision).
- *
- * The streaming path (`streamMiniMax`) does NOT call this — the SDK already
- * resolves `options.apiKey` via AuthStorage + provider-scoped env before
- * invoking `streamSimple`, so any logic here would be dead code there.
- *
- * Priority:
- * 1. `options.apiKey` — SDK pre-resolved key (covers runtime overrides, login,
- *    and provider-scoped env)
- * 2. `process.env.MINIMAX_API_KEY` — ambient env fallback
+ * Resolve the MiniMax API host, honoring MINIMAX_API_HOST for users on the
+ * Mainland China endpoint or behind a proxy.  Read at provider-registration
+ * time (and on every native-tool call) since the env var is part of the
+ * process environment.
  */
-async function getMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
-	return options?.apiKey ?? process.env.MINIMAX_API_KEY ?? "";
-}
-
 export function getMiniMaxApiHost(): string {
 	return (process.env.MINIMAX_API_HOST || MINIMAX_API_HOST).replace(/\/$/, "");
 }
 
 /**
- * The MiniMax Anthropic-compatible endpoint base URL, honoring MINIMAX_API_HOST.
- *
- * Call this at request time (rather than caching MINIMAX_API_BASE at module
- * load) so users can switch regions by changing the env var, e.g.:
- *
- *   MINIMAX_API_HOST=https://api.minimaxi.com pi ...
- *
- * Use this in `streamMiniMax` and any future request builders; the native
- * tool helpers already use it via `callMiniMaxJson`.
+ * Resolve the Anthropic-compatible endpoint base URL (host + "/anthropic").
  */
 export function getMiniMaxApiBase(): string {
 	return `${getMiniMaxApiHost()}/anthropic`;
 }
 
+/**
+ * Get the MiniMax API key for native tools.  Priority:
+ * 1. `options.apiKey` — SDK pre-resolved key (covers runtime overrides, login,
+ *    and provider-scoped env)
+ * 2. `process.env.MINIMAX_API_KEY` — ambient env fallback
+ */
 export async function getRequiredMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
-	const apiKey = await getMiniMaxApiKey(options);
+	const apiKey = options?.apiKey ?? process.env.MINIMAX_API_KEY ?? "";
 	if (!apiKey) {
 		throw new Error("MiniMax API key is required. Use /login for the minimax provider or set MINIMAX_API_KEY.");
 	}
@@ -478,436 +460,6 @@ export function formatVoiceList(data: Record<string, unknown>): string {
 	return sections.join("\n\n");
 }
 
-/**
- * Build the Anthropic/MiniMax Messages API `messages` array from a Pi Context.
- *
- * Exported so tests can exercise message ordering independently of the streaming
- * implementation.
- *
- * Notable behaviors that address MiniMax API error 2013 ("tool call result does
- * not follow tool call"):
- *
- * 1.  Multiple consecutive toolResult messages are grouped into a single user
- *     message, since the Messages API requires all tool_result blocks for one
- *     assistant turn to live in the immediately-following user message.
- *
- * 2.  When non-standard Pi entries (branchSummary, compactionSummary, custom
- *     extension entries, etc.) appear between an assistant's tool_use and its
- *     tool_result, the previous-message check would miss the correct grouping.
- *     We scan backward from the end of `messages` to find the most recent
- *     pure-tool-result user message and append there.
- *
- * 3.  When multiple tool_use blocks come from a single assistant turn, the
- *     corresponding tool_result blocks are reordered to match the tool_use
- *     order, since MiniMax is stricter than some Anthropic-compatible endpoints
- *     about result order.
- *
- * 4.  Non-user/non-assistant/non-toolResult entries (branchSummary etc.) are
- *     skipped because the Anthropic API does not have a representation for
- *     them.  Their textual content is dropped on the floor; if you need to
- *     preserve them, send them through as user messages with text content
- *     yourself.
- */
-export function buildAnthropicMessages(
-	contextMessages: Context["messages"],
-	systemPrompt: string | undefined,
-): Array<{ role: string; content: string | unknown[] }> {
-	const messages: Array<{ role: string; content: string | unknown[] }> = [];
-
-	// Add system prompt
-	if (systemPrompt) {
-		messages.push({
-			role: "system",
-			content: systemPrompt,
-		});
-	}
-
-	// Convert context messages
-	for (const msg of contextMessages) {
-		if (msg.role === "user") {
-			if (typeof msg.content === "string") {
-				messages.push({ role: "user", content: msg.content });
-			} else {
-				const content = msg.content.map((block) => {
-					if (block.type === "text") {
-						return { type: "text", text: block.text };
-					} else if (block.type === "image") {
-						return {
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: block.mimeType,
-								data: block.data,
-							},
-						};
-					}
-					return null;
-				}).filter(Boolean);
-				messages.push({ role: "user", content: content as unknown[] });
-			}
-		} else if (msg.role === "assistant") {
-			const content: unknown[] = [];
-			for (const block of msg.content) {
-				if (block.type === "text" && block.text.trim()) {
-					content.push({ type: "text", text: block.text });
-				} else if (block.type === "thinking" && block.thinking.trim()) {
-					content.push({
-						type: "thinking",
-						thinking: block.thinking,
-						signature: (block as ThinkingContent).thinkingSignature || "",
-					});
-				} else if (block.type === "toolCall") {
-					content.push({
-						type: "tool_use",
-						id: block.id,
-						name: block.name,
-						input: block.arguments,
-					});
-				}
-			}
-			if (content.length > 0) {
-				messages.push({ role: "assistant", content });
-			}
-		} else if (msg.role === "toolResult") {
-			const content = msg.content.map((block) => {
-				if (block.type === "text") {
-					return { type: "text", text: block.text };
-				} else if (block.type === "image") {
-					return {
-						type: "image",
-						source: {
-							type: "base64",
-							media_type: block.mimeType,
-							data: block.data,
-						},
-					};
-				}
-				return null;
-			}).filter(Boolean);
-
-			const toolResultBlock = {
-				type: "tool_result",
-				tool_use_id: msg.toolCallId,
-				content: content.length > 0 ? content : [{ type: "text", text: "" }],
-				is_error: msg.isError,
-			};
-
-			// Scan backward to find the most recent pure-tool-result user message.
-			// This handles cases where intervening non-standard entries (branchSummary,
-			// compactionSummary, custom extension entries, etc.) appear between a
-			// tool_use and its tool_result, breaking the simple "last message is a
-			// tool_result user message" check.
-			let target: { role: string; content: string | unknown[] } | undefined;
-			for (let j = messages.length - 1; j >= 0; j--) {
-				const m = messages[j];
-				if (m.role !== "user") continue;
-				if (!Array.isArray(m.content) || m.content.length === 0) continue;
-				if (m.content.every((block) => (block as { type?: string }).type === "tool_result")) {
-					target = m;
-					break;
-				}
-				// First non-tool-result user message stops the search so we don't
-				// group results from different assistant turns.
-				break;
-			}
-
-			if (target) {
-				(target.content as unknown[]).push(toolResultBlock);
-			} else {
-				messages.push({
-					role: "user",
-					content: [toolResultBlock],
-				});
-			}
-		}
-	}
-
-	// Reorder tool_result blocks to match the tool_use order from the preceding
-	// assistant message.  MiniMax is stricter than some Anthropic-compatible
-	// endpoints about result ordering.
-	for (let i = 1; i < messages.length; i++) {
-		const current = messages[i];
-		const previous = messages[i - 1];
-		if (current.role !== "user" || previous.role !== "assistant"
-			|| !Array.isArray(current.content) || !Array.isArray(previous.content)
-			|| !current.content.every((block) => (block as { type?: string }).type === "tool_result")) {
-			continue;
-		}
-
-		const toolUseOrder = new Map<string, number>();
-		previous.content.forEach((block, index) => {
-			const typed = block as { type?: string; id?: string };
-			if (typed.type === "tool_use" && typeof typed.id === "string") {
-				toolUseOrder.set(typed.id, index);
-			}
-		});
-
-		if (toolUseOrder.size > 1) {
-			(current.content as unknown[]).sort((a, b) => {
-				const aId = (a as { tool_use_id?: string }).tool_use_id;
-				const bId = (b as { tool_use_id?: string }).tool_use_id;
-				const aOrder = typeof aId === "string" ? toolUseOrder.get(aId) : undefined;
-				const bOrder = typeof bId === "string" ? toolUseOrder.get(bId) : undefined;
-				return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER);
-			});
-		}
-	}
-
-	return messages;
-}
-
-function mapStopReason(reason: string | undefined): StopReason {
-	switch (reason) {
-		case "end_turn":
-		case "stop_sequence":
-			return "stop";
-		case "max_tokens":
-			return "length";
-		case "tool_use":
-			return "toolUse";
-		default:
-			return "stop";
-	}
-}
-
-/**
- * Stream handler for MiniMax models.
- * Custom implementation with Bearer token authentication.
- */
-export function streamMiniMax(
-	model: Model<Api>,
-	context: Context,
-	options?: SimpleStreamOptions,
-): AssistantMessageEventStream {
-	const stream = createAssistantMessageEventStream();
-
-	(async () => {
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-
-		try {
-			// Build messages for MiniMax (see buildAnthropicMessages for ordering rules).
-			const messages = buildAnthropicMessages(context.messages, context.systemPrompt);
-
-			// Build tools
-			const tools = context.tools?.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				input_schema: {
-					type: "object",
-					properties: (tool.parameters as Record<string, unknown>)?.properties || {},
-					required: (tool.parameters as Record<string, unknown>)?.required || [],
-				},
-			}));
-
-			// Build request body
-			const body: Record<string, unknown> = {
-				model: model.id,
-				messages,
-				max_tokens: options?.maxTokens || getRecommendedMaxTokens(model),
-				stream: true,
-			};
-
-			if (tools && tools.length > 0) {
-				body.tools = tools;
-			}
-
-			// Handle thinking/reasoning
-			if (options?.reasoning && model.reasoning) {
-				if (model.id === "MiniMax-M3") {
-					body.thinking = { type: "adaptive" };
-				} else {
-					const defaultBudgets: Record<string, number> = {
-						minimal: 1024,
-						low: 4096,
-						medium: 10240,
-						high: 20480,
-						xhigh: 32768,
-					};
-					const reasoning = options.reasoning as string;
-					const customBudget = options.thinkingBudgets?.[reasoning as keyof typeof options.thinkingBudgets];
-					body.thinking = {
-						type: "enabled",
-						budget_tokens: customBudget ?? defaultBudgets[reasoning] ?? 10240,
-					};
-				}
-			}
-
-				// Get API key using SDK's priority chain (auth.json checked when env var not set)
-			const apiKey = await getMiniMaxApiKey(options);
-			// Resolve the base URL at request time so MINIMAX_API_HOST env var
-			// changes are honored.  model.baseUrl is also overridden if it points
-			// at the default MINIMAX_API_BASE so a host-override env var always wins.
-			const defaultBase = getMiniMaxApiBase();
-			const modelBase = model.baseUrl && model.baseUrl !== MINIMAX_API_BASE ? model.baseUrl : undefined;
-			const baseUrl = modelBase || defaultBase;
-			
-			// Safely append /v1/messages without breaking query parameters (e.g., ?GroupId=...)
-			const url = new URL(baseUrl);
-			if (!url.pathname.endsWith("/v1/messages")) {
-				url.pathname = url.pathname.replace(/\/$/, "") + "/v1/messages";
-			}
-			const requestUrl = url.toString();
-
-			const requestHeaders: Record<string, string> = {
-				"Authorization": `Bearer ${apiKey}`,
-				"anthropic-version": "2023-06-01",
-				"Content-Type": "application/json",
-				...(model.headers || {})
-			};
-			
-			if (options && 'headers' in options && options.headers) {
-				Object.assign(requestHeaders, options.headers);
-			}
-
-			const requestBody = JSON.stringify(body);
-
-			const response = await fetch(requestUrl, {
-				method: "POST",
-				headers: requestHeaders,
-				body: requestBody,
-				signal: options?.signal,
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(`MiniMax API error: ${response.status} ${errorText}`);
-			}
-
-			if (!response.body) {
-				throw new Error("No response body");
-			}
-
-			// Stream the response
-			const reader = response.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = "";
-			let currentEventType = "";
-
-			stream.push({ type: "start", partial: output });
-
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
-					if (line.startsWith("event: ")) {
-						currentEventType = line.slice(7).trim();
-					} else if (line.startsWith("data: ")) {
-						const data = line.slice(6);
-						if (data === "[DONE]") continue;
-
-						try {
-							const event = JSON.parse(data);
-							const eventType = currentEventType || event.type;
-							currentEventType = "";
-
-							if (eventType === "message_start" || event.type === "message_start") {
-								const usage = event.message?.usage || {};
-								output.usage.input = usage.input_tokens || 0;
-								output.usage.cacheRead = usage.cache_read_input_tokens || 0;
-								output.usage.cacheWrite = usage.cache_creation_input_tokens || 0;
-								output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-							} else if (eventType === "content_block_start") {
-								if (event.content_block?.type === "text") {
-									output.content.push({ type: "text", text: "" } as TextContent);
-									stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-								} else if (event.content_block?.type === "thinking") {
-									output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" } as ThinkingContent);
-									stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
-								} else if (event.content_block?.type === "tool_use") {
-									const toolCall: ToolCall = {
-										type: "toolCall",
-										id: event.content_block.id,
-										name: event.content_block.name,
-										arguments: {},
-									};
-									output.content.push(toolCall);
-									stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
-								}
-							} else if (eventType === "content_block_delta") {
-								const idx = event.index ?? output.content.length - 1;
-								const block = output.content[idx];
-
-								if (event.delta?.type === "text_delta" && block?.type === "text") {
-									(block as TextContent).text += event.delta.text;
-									stream.push({ type: "text_delta", contentIndex: idx, delta: event.delta.text, partial: output });
-								} else if (event.delta?.type === "thinking_delta" && block?.type === "thinking") {
-									(block as ThinkingContent).thinking += event.delta.thinking;
-									stream.push({ type: "thinking_delta", contentIndex: idx, delta: event.delta.thinking, partial: output });
-								} else if (event.delta?.type === "input_json_delta" && block?.type === "toolCall") {
-									const tcBlock = block as ToolCall & { partialJson?: string };
-									tcBlock.partialJson = (tcBlock.partialJson || "") + event.delta.partial_json;
-									try {
-										tcBlock.arguments = JSON.parse(tcBlock.partialJson);
-									} catch {
-										// Keep partial JSON until complete
-									}
-									stream.push({ type: "toolcall_delta", contentIndex: idx, delta: event.delta.partial_json, partial: output });
-								}
-							} else if (eventType === "content_block_stop") {
-								const idx = event.index ?? output.content.length - 1;
-								const block = output.content[idx];
-								if (block?.type === "toolCall") {
-									const tcBlock = block as ToolCall & { partialJson?: string };
-									delete tcBlock.partialJson;
-								}
-							} else if (eventType === "message_delta") {
-								if (event.delta?.stop_reason) {
-									output.stopReason = mapStopReason(event.delta.stop_reason);
-								}
-								if (event.usage) {
-									output.usage.output = event.usage.output_tokens || 0;
-									output.usage.cacheRead = event.usage.cache_read_input_tokens ?? output.usage.cacheRead;
-									output.usage.cacheWrite = event.usage.cache_creation_input_tokens ?? output.usage.cacheWrite;
-									output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-								}
-							} else if (eventType === "message_stop") {
-								output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-							}
-						} catch {
-							// Skip malformed JSON
-						}
-					}
-				}
-			}
-
-			calculateCost(model, output.usage);
-			stream.push({
-				type: "done",
-				reason: output.stopReason as "stop" | "length" | "toolUse",
-				message: output,
-			});
-			stream.end();
-		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-			stream.push({ type: "error", reason: output.stopReason, error: output });
-			stream.end();
-		}
-	})();
-
-	return stream;
-}
 
 // =============================================================================
 // Extension Entry Point
@@ -1070,48 +622,28 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerProvider("minimax", {
-		baseUrl: MINIMAX_API_BASE,
+		baseUrl: getMiniMaxApiBase(),
+		// Use the SDK's standard env-interpolation syntax.  Without "$", the SDK
+		// would treat the string as a literal API key and send "MINIMAX_API_KEY"
+		// as the Bearer token.
 		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
-		models: MODELS.map(({ id, name, reasoning, input, cost, contextWindow, maxTokens }) => ({
-			id,
-			name,
-			reasoning,
-			input,
-			cost,
-			contextWindow,
-			maxTokens,
-		})),
-		streamSimple: streamMiniMax,
-		oauth: {
-			name: "MiniMax",
-      async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
-				const apiKey = await callbacks.onPrompt({
-					message: "Enter your MiniMax API key:",
-				});
-				if (!apiKey || apiKey.trim() === "") {
-					throw new Error("API key is required");
-				}
-				return {
-					// Store API key in access field (no refresh token for simple API key auth)
-					access: apiKey.trim(),
-					refresh: "",
-					// Far future expiration (API keys don't expire unless user rotates them)
-					expires: Date.now() + 1000 * 60 * 60 * 24 * 365 * 10, // 10 years
-				};
-			},
-      async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-				// API keys don't expire, but this is called by the SDK periodically
-				// Return credentials as-is if they're not expired
-				if (credentials.expires > Date.now()) {
-					return credentials;
-				}
-				// If expired, return empty to trigger re-login
-				return { access: "", refresh: "", expires: 0 };
-			},
-      getApiKey(credentials: OAuthCredentials): string {
-				return credentials.access;
-			},
-		},
+		streamSimple: anthropicMessagesApi().streamSimple,
+		models: MODELS.map((m) => {
+			// M3 supports adaptive thinking; M2 series are budget-based.  The
+			// SDK's anthropicMessagesApi handles both modes transparently when
+			// compat.forceAdaptiveThinking is set on the model.
+			const compat = m.id === "MiniMax-M3" ? { forceAdaptiveThinking: true } : undefined;
+			return {
+				id: m.id,
+				name: m.name,
+				reasoning: m.reasoning,
+				input: m.input,
+				cost: m.cost,
+				contextWindow: m.contextWindow,
+				maxTokens: m.maxTokens,
+				...(compat ? { compat } : {}),
+			};
+		}),
 	});
 }
