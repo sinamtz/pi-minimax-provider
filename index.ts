@@ -487,6 +487,184 @@ export function formatVoiceList(data: Record<string, unknown>): string {
 	return sections.join("\n\n");
 }
 
+/**
+ * Build the Anthropic/MiniMax Messages API `messages` array from a Pi Context.
+ *
+ * Exported so tests can exercise message ordering independently of the streaming
+ * implementation.
+ *
+ * Notable behaviors that address MiniMax API error 2013 ("tool call result does
+ * not follow tool call"):
+ *
+ * 1.  Multiple consecutive toolResult messages are grouped into a single user
+ *     message, since the Messages API requires all tool_result blocks for one
+ *     assistant turn to live in the immediately-following user message.
+ *
+ * 2.  When non-standard Pi entries (branchSummary, compactionSummary, custom
+ *     extension entries, etc.) appear between an assistant's tool_use and its
+ *     tool_result, the previous-message check would miss the correct grouping.
+ *     We scan backward from the end of `messages` to find the most recent
+ *     pure-tool-result user message and append there.
+ *
+ * 3.  When multiple tool_use blocks come from a single assistant turn, the
+ *     corresponding tool_result blocks are reordered to match the tool_use
+ *     order, since MiniMax is stricter than some Anthropic-compatible endpoints
+ *     about result order.
+ *
+ * 4.  Non-user/non-assistant/non-toolResult entries (branchSummary etc.) are
+ *     skipped because the Anthropic API does not have a representation for
+ *     them.  Their textual content is dropped on the floor; if you need to
+ *     preserve them, send them through as user messages with text content
+ *     yourself.
+ */
+export function buildAnthropicMessages(
+	contextMessages: Context["messages"],
+	systemPrompt: string | undefined,
+): Array<{ role: string; content: string | unknown[] }> {
+	const messages: Array<{ role: string; content: string | unknown[] }> = [];
+
+	// Add system prompt
+	if (systemPrompt) {
+		messages.push({
+			role: "system",
+			content: systemPrompt,
+		});
+	}
+
+	// Convert context messages
+	for (const msg of contextMessages) {
+		if (msg.role === "user") {
+			if (typeof msg.content === "string") {
+				messages.push({ role: "user", content: msg.content });
+			} else {
+				const content = msg.content.map((block) => {
+					if (block.type === "text") {
+						return { type: "text", text: block.text };
+					} else if (block.type === "image") {
+						return {
+							type: "image",
+							source: {
+								type: "base64",
+								media_type: block.mimeType,
+								data: block.data,
+							},
+						};
+					}
+					return null;
+				}).filter(Boolean);
+				messages.push({ role: "user", content: content as unknown[] });
+			}
+		} else if (msg.role === "assistant") {
+			const content: unknown[] = [];
+			for (const block of msg.content) {
+				if (block.type === "text" && block.text.trim()) {
+					content.push({ type: "text", text: block.text });
+				} else if (block.type === "thinking" && block.thinking.trim()) {
+					content.push({
+						type: "thinking",
+						thinking: block.thinking,
+						signature: (block as ThinkingContent).thinkingSignature || "",
+					});
+				} else if (block.type === "toolCall") {
+					content.push({
+						type: "tool_use",
+						id: block.id,
+						name: block.name,
+						input: block.arguments,
+					});
+				}
+			}
+			if (content.length > 0) {
+				messages.push({ role: "assistant", content });
+			}
+		} else if (msg.role === "toolResult") {
+			const content = msg.content.map((block) => {
+				if (block.type === "text") {
+					return { type: "text", text: block.text };
+				} else if (block.type === "image") {
+					return {
+						type: "image",
+						source: {
+							type: "base64",
+							media_type: block.mimeType,
+							data: block.data,
+						},
+					};
+				}
+				return null;
+			}).filter(Boolean);
+
+			const toolResultBlock = {
+				type: "tool_result",
+				tool_use_id: msg.toolCallId,
+				content: content.length > 0 ? content : [{ type: "text", text: "" }],
+				is_error: msg.isError,
+			};
+
+			// Scan backward to find the most recent pure-tool-result user message.
+			// This handles cases where intervening non-standard entries (branchSummary,
+			// compactionSummary, custom extension entries, etc.) appear between a
+			// tool_use and its tool_result, breaking the simple "last message is a
+			// tool_result user message" check.
+			let target: { role: string; content: string | unknown[] } | undefined;
+			for (let j = messages.length - 1; j >= 0; j--) {
+				const m = messages[j];
+				if (m.role !== "user") continue;
+				if (!Array.isArray(m.content) || m.content.length === 0) continue;
+				if (m.content.every((block) => (block as { type?: string }).type === "tool_result")) {
+					target = m;
+					break;
+				}
+				// First non-tool-result user message stops the search so we don't
+				// group results from different assistant turns.
+				break;
+			}
+
+			if (target) {
+				(target.content as unknown[]).push(toolResultBlock);
+			} else {
+				messages.push({
+					role: "user",
+					content: [toolResultBlock],
+				});
+			}
+		}
+	}
+
+	// Reorder tool_result blocks to match the tool_use order from the preceding
+	// assistant message.  MiniMax is stricter than some Anthropic-compatible
+	// endpoints about result ordering.
+	for (let i = 1; i < messages.length; i++) {
+		const current = messages[i];
+		const previous = messages[i - 1];
+		if (current.role !== "user" || previous.role !== "assistant"
+			|| !Array.isArray(current.content) || !Array.isArray(previous.content)
+			|| !current.content.every((block) => (block as { type?: string }).type === "tool_result")) {
+			continue;
+		}
+
+		const toolUseOrder = new Map<string, number>();
+		previous.content.forEach((block, index) => {
+			const typed = block as { type?: string; id?: string };
+			if (typed.type === "tool_use" && typeof typed.id === "string") {
+				toolUseOrder.set(typed.id, index);
+			}
+		});
+
+		if (toolUseOrder.size > 1) {
+			(current.content as unknown[]).sort((a, b) => {
+				const aId = (a as { tool_use_id?: string }).tool_use_id;
+				const bId = (b as { tool_use_id?: string }).tool_use_id;
+				const aOrder = typeof aId === "string" ? toolUseOrder.get(aId) : undefined;
+				const bOrder = typeof bId === "string" ? toolUseOrder.get(bId) : undefined;
+				return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER);
+			});
+		}
+	}
+
+	return messages;
+}
+
 function mapStopReason(reason: string | undefined): StopReason {
 	switch (reason) {
 		case "end_turn":
@@ -532,138 +710,8 @@ export function streamMiniMax(
 		};
 
 		try {
-			// Build messages for MiniMax
-			const messages: Array<{ role: string; content: string | unknown[] }> = [];
-
-			// Add system prompt
-			if (context.systemPrompt) {
-				messages.push({
-					role: "system",
-					content: context.systemPrompt,
-				});
-			}
-
-			// Convert context messages
-			for (const msg of context.messages) {
-				if (msg.role === "user") {
-					if (typeof msg.content === "string") {
-						messages.push({ role: "user", content: msg.content });
-					} else {
-						const content = msg.content.map((block) => {
-							if (block.type === "text") {
-								return { type: "text", text: block.text };
-							} else if (block.type === "image") {
-								return {
-									type: "image",
-									source: {
-										type: "base64",
-										media_type: block.mimeType,
-										data: block.data,
-									},
-								};
-							}
-							return null;
-						}).filter(Boolean);
-						messages.push({ role: "user", content: content as unknown[] });
-					}
-				} else if (msg.role === "assistant") {
-					const content: unknown[] = [];
-					for (const block of msg.content) {
-						if (block.type === "text" && block.text.trim()) {
-							content.push({ type: "text", text: block.text });
-						} else if (block.type === "thinking" && block.thinking.trim()) {
-							content.push({
-								type: "thinking",
-								thinking: block.thinking,
-								signature: (block as ThinkingContent).thinkingSignature || "",
-							});
-						} else if (block.type === "toolCall") {
-							content.push({
-								type: "tool_use",
-								id: block.id,
-								name: block.name,
-								input: block.arguments,
-							});
-						}
-					}
-					if (content.length > 0) {
-						messages.push({ role: "assistant", content });
-					}
-				} else if (msg.role === "toolResult") {
-					const content = msg.content.map((block) => {
-						if (block.type === "text") {
-							return { type: "text", text: block.text };
-						} else if (block.type === "image") {
-							return {
-								type: "image",
-								source: {
-									type: "base64",
-									media_type: block.mimeType,
-									data: block.data,
-								},
-							};
-						}
-						return null;
-					}).filter(Boolean);
-
-					const toolResultBlock = {
-						type: "tool_result",
-						tool_use_id: msg.toolCallId,
-						content: content.length > 0 ? content : [{ type: "text", text: "" }],
-						is_error: msg.isError,
-					};
-
-					// Pi records each tool result as its own `toolResult` message. The
-					// Anthropic/MiniMax Messages API requires all results for a multi-tool
-					// assistant turn to be in the immediately-following user message. If we
-					// emit one user message per result, the second result no longer directly
-					// follows the assistant tool_use turn and MiniMax returns:
-					// "tool call result does not follow tool call".
-					const previous = messages[messages.length - 1];
-					if (previous?.role === "user" && Array.isArray(previous.content)
-						&& previous.content.every((block) => (block as { type?: string }).type === "tool_result")) {
-						previous.content.push(toolResultBlock);
-					} else {
-						messages.push({
-							role: "user",
-							content: [toolResultBlock],
-						});
-					}
-				}
-			}
-
-			// MiniMax is stricter than some Anthropic-compatible endpoints: when an
-			// assistant turn emits multiple tool_use blocks, the immediately following
-			// user message must contain the corresponding tool_result blocks in the same
-			// order. Pi can record parallel tool results in completion order, so normalize
-			// each tool-result message against the preceding assistant tool_use order.
-			for (let i = 1; i < messages.length; i++) {
-				const current = messages[i];
-				const previous = messages[i - 1];
-				if (current.role !== "user" || previous.role !== "assistant"
-					|| !Array.isArray(current.content) || !Array.isArray(previous.content)
-					|| !current.content.every((block) => (block as { type?: string }).type === "tool_result")) {
-					continue;
-				}
-
-				const toolUseOrder = new Map<string, number>();
-				previous.content.forEach((block, index) => {
-					const typed = block as { type?: string; id?: string };
-					if (typed.type === "tool_use" && typeof typed.id === "string") {
-						toolUseOrder.set(typed.id, index);
-					}
-				});
-
-				if (toolUseOrder.size > 1) {
-					current.content.sort((a, b) => {
-						const aId = (a as { tool_use_id?: string }).tool_use_id;
-						const bId = (b as { tool_use_id?: string }).tool_use_id;
-						const aOrder = typeof aId === "string" ? toolUseOrder.get(aId) : undefined;
-						const bOrder = typeof bId === "string" ? toolUseOrder.get(bId) : undefined;
-						return (aOrder ?? Number.MAX_SAFE_INTEGER) - (bOrder ?? Number.MAX_SAFE_INTEGER);
-					});
-				}
-			}
+			// Build messages for MiniMax (see buildAnthropicMessages for ordering rules).
+			const messages = buildAnthropicMessages(context.messages, context.systemPrompt);
 
 			// Build tools
 			const tools = context.tools?.map((tool) => ({
