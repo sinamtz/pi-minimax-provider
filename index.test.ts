@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +11,8 @@ import registerMiniMax, {
 	getImageMimeType,
 	getMiniMaxApiBase,
 	getMiniMaxApiHost,
+	getMiniMaxCnApiBase,
+	getMiniMaxToolRegion,
 	getRequiredMiniMaxApiKey,
 	imageSourceToDataUrl,
 	resolveAudioOutputPath,
@@ -20,7 +24,11 @@ import registerMiniMax, {
 afterEach(() => {
 	vi.restoreAllMocks();
 	delete process.env.MINIMAX_API_HOST;
+	delete process.env.MINIMAX_CN_API_HOST;
 	delete process.env.MINIMAX_API_KEY;
+	delete process.env.MINIMAX_CN_API_KEY;
+	delete process.env.MINIMAX_REGION;
+	delete process.env.MINIMAX_BASE_URL;
 	delete process.env.MINIMAX_MCP_BASE_PATH;
 });
 
@@ -52,7 +60,26 @@ type ProviderCall = {
 	};
 };
 
-function captureRegistration() {
+function createFakeSdk() {
+	return {
+		search: { query: vi.fn(async () => ({ organic: [] })) },
+		vision: { describe: vi.fn(async () => ({ content: "image description" })) },
+		speech: {
+			voices: vi.fn(async () => [{ voice_id: "voice-1", voice_name: "Voice One", description: ["English"] }]),
+			synthesize: vi.fn(async () => ({ base_resp: { status_code: 0, status_msg: "success" }, data: { audio_url: "https://audio.example/out.mp3", status: 2 } })),
+		},
+		image: { generate: vi.fn(async () => ({ base_resp: { status_code: 0, status_msg: "success" }, data: { image_urls: ["https://image.example/out.png"], task_id: "img-1", success_count: 1, failed_count: 0 } })) },
+		video: {
+			generate: vi.fn(async () => ({ taskId: "video-task-1" })),
+			getTask: vi.fn(async () => ({ base_resp: { status_code: 0, status_msg: "success" }, task_id: "video-task-1", status: "Success", file_id: "file-1" })),
+			download: vi.fn(async () => ({ size: 10, save: "/tmp/video.mp4", downloadUrl: "https://video.example/out.mp4" })),
+		},
+		music: { generate: vi.fn(async () => ({ base_resp: { status_code: 0, status_msg: "success" }, data: { audio_url: "https://audio.example/music.mp3", status: 2 } })) },
+		quota: { info: vi.fn(async () => ({ model_remains: [] })) },
+	};
+}
+
+function captureRegistration(sdk = createFakeSdk()) {
 	const tools: Record<string, RegisteredTool> = {};
 	const providers: ProviderCall[] = [];
 	const pi = {
@@ -63,24 +90,25 @@ function captureRegistration() {
 			providers.push({ name, config });
 		},
 	};
-	registerMiniMax(pi as never);
-	return { tools, providers };
+	const sdkFactory = vi.fn(async (_options?: unknown) => sdk as never);
+	registerMiniMax(pi as never, sdkFactory);
+	return { tools, providers, sdk, sdkFactory };
 }
 
 describe("models", () => {
 	it("includes MiniMax-M3 with 1M context, 524288 maxTokens, and image input", () => {
-		// M3 is the headline model.  The README documents pricing of $0.60 / $2.40
-		// per million tokens at ≤512k input, a 1M-token context window, and a
-		// 524288-token max output cap.  The built-in minimax provider in pi-ai has
-		// 0.30 / 1.20 pricing and 128000 maxTokens — this extension overrides those
-		// so cost tracking and output budgets match the documented limits.
+		// M3 is the headline model.  The README documents MiniMax's current
+		// permanent-discount pricing of $0.30 / $1.20 per million tokens at ≤512k
+		// input, a 1M-token context window, and a 524288-token max output cap.  The
+		// extension overrides built-in metadata where needed so cost tracking and
+		// output budgets match the documented limits.
 		const m3 = MODELS.find((model) => model.id === "MiniMax-M3");
 		expect(m3).toMatchObject({
 			contextWindow: 1000000,
 			maxTokens: 524288,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: { input: 0.60, output: 2.40, cacheRead: 0.12, cacheWrite: 0 },
+			cost: { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
 		});
 	});
 
@@ -105,7 +133,7 @@ describe("models", () => {
 		// Snapshot test: any drift here means the pricing page in the README
 		// needs to be updated alongside the code change.
 		const expected: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-			"MiniMax-M3": { input: 0.60, output: 2.40, cacheRead: 0.12, cacheWrite: 0 },
+			"MiniMax-M3": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
 			"MiniMax-M2.7": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0.375 },
 			"MiniMax-M2.7-highspeed": { input: 0.60, output: 2.40, cacheRead: 0.06, cacheWrite: 0.375 },
 			"MiniMax-M2.5": { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0.375 },
@@ -177,12 +205,30 @@ describe("MiniMax host and JSON helper", () => {
 		await expect(getRequiredMiniMaxApiKey({ apiKey: "from-options" })).resolves.toBe("from-options");
 	});
 
-	it("getRequiredMiniMaxApiKey falls back to MINIMAX_API_KEY env", async () => {
+	it("getRequiredMiniMaxApiKey falls back to global or China env keys", async () => {
 		delete process.env.MINIMAX_API_KEY;
+		delete process.env.MINIMAX_CN_API_KEY;
 		await expect(getRequiredMiniMaxApiKey()).rejects.toThrow(/MiniMax API key is required/);
 
-		process.env.MINIMAX_API_KEY = "from-env";
-		await expect(getRequiredMiniMaxApiKey()).resolves.toBe("from-env");
+		process.env.MINIMAX_CN_API_KEY = "from-cn-env";
+		await expect(getRequiredMiniMaxApiKey()).resolves.toBe("from-cn-env");
+
+		process.env.MINIMAX_API_KEY = "from-global-env";
+		await expect(getRequiredMiniMaxApiKey()).resolves.toBe("from-global-env");
+	});
+
+	it("resolves the China provider base URL independently", () => {
+		expect(getMiniMaxCnApiBase()).toBe("https://api.minimaxi.com/anthropic");
+		process.env.MINIMAX_CN_API_HOST = "https://proxy.example.cn/";
+		expect(getMiniMaxCnApiBase()).toBe("https://proxy.example.cn/anthropic");
+	});
+
+	it("selects the official SDK region explicitly or from regional credentials", () => {
+		expect(getMiniMaxToolRegion()).toBe("global");
+		process.env.MINIMAX_CN_API_KEY = "cn-key";
+		expect(getMiniMaxToolRegion()).toBe("cn");
+		process.env.MINIMAX_REGION = "global";
+		expect(getMiniMaxToolRegion()).toBe("global");
 	});
 
 	it("posts JSON and parses successful MiniMax responses", async () => {
@@ -281,39 +327,59 @@ describe("speech helpers", () => {
 });
 
 describe("registered tools", () => {
-	function registeredTools() {
-		return captureRegistration().tools;
-	}
-
-	it("registers native MiniMax tools", () => {
-		const tools = registeredTools();
+	it("registers all official MiniMax SDK capabilities", () => {
+		const { tools } = captureRegistration();
 		expect(Object.keys(tools)).toEqual(expect.arrayContaining([
-			"minimax_web_search",
-			"minimax_understand_image",
-			"minimax_list_voices",
-			"minimax_text_to_audio",
+			"minimax_web_search", "minimax_understand_image", "minimax_list_voices", "minimax_text_to_audio",
+			"minimax_generate_image", "minimax_video", "minimax_generate_music", "minimax_quota",
 		]));
 	});
 
-	it("executes web search with the expected payload", async () => {
-		process.env.MINIMAX_API_KEY = "sk-test";
-		const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ organic: [], base_resp: { status_code: 0 } }), { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
-		const result = await registeredTools().minimax_web_search.execute("id", { query: "MiniMax docs" });
+	it("routes web search through the official SDK", async () => {
+		const { tools, sdk } = captureRegistration();
+		const result = await tools.minimax_web_search.execute("id", { query: "MiniMax docs" });
+		expect(sdk.search.query).toHaveBeenCalledWith("MiniMax docs");
 		expect(result.content[0].text).toContain("organic");
-		expect(fetchMock).toHaveBeenCalledWith("https://api.minimax.io/v1/coding_plan/search", expect.objectContaining({ body: JSON.stringify({ q: "MiniMax docs" }) }));
 	});
 
-	it("formats voice list results", () => {
+	it("passes Pi-resolved auth.json credentials into the official SDK", async () => {
+		const { tools, sdkFactory } = captureRegistration();
+		const modelRegistry = { getApiKeyForProvider: vi.fn(async () => "stored-token-plan-key") };
+		await tools.minimax_web_search.execute("id", { query: "MiniMax docs" }, undefined, undefined, { modelRegistry });
+		expect(modelRegistry.getApiKeyForProvider).toHaveBeenCalledWith("minimax");
+		expect(sdkFactory).toHaveBeenCalledWith({ apiKey: "stored-token-plan-key" });
+	});
+
+	it("routes image understanding through the official SDK", async () => {
+		const { tools, sdk } = captureRegistration();
+		await tools.minimax_understand_image.execute("id", { prompt: "Describe", image_source: "data:image/png;base64,abc" }, undefined, undefined, { cwd: process.cwd() });
+		expect(sdk.vision.describe).toHaveBeenCalledWith({ image: "data:image/png;base64,abc", prompt: "Describe" });
+	});
+
+	it("formats voice list results", async () => {
+		const { tools } = captureRegistration();
+		const result = await tools.minimax_list_voices.execute("id", { language: "en" });
+		expect(result.content[0].text).toContain("Voice One: voice-1");
 		expect(formatVoiceList({ system_voice: [{ voice_name: "Girl", voice_id: "female-shaonv" }], voice_cloning: [] })).toContain("Girl: female-shaonv");
 	});
 
-	it("executes text-to-audio URL mode", async () => {
-		process.env.MINIMAX_API_KEY = "sk-test";
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { audio: "https://audio.example/out.mp3" }, base_resp: { status_code: 0 } }), { status: 200 })));
-		const result = await registeredTools().minimax_text_to_audio.execute("id", { text: "Hello", output_mode: "url" }, undefined, undefined, { cwd: process.cwd() });
+	it("executes text-to-audio URL mode through the SDK", async () => {
+		const { tools, sdk } = captureRegistration();
+		const result = await tools.minimax_text_to_audio.execute("id", { text: "Hello", output_mode: "url" }, undefined, undefined, { cwd: process.cwd() });
+		expect(sdk.speech.synthesize).toHaveBeenCalled();
 		expect(result.content[0].text).toContain("Audio URL");
-		expect(result.details.url).toBe("https://audio.example/out.mp3");
+	});
+
+	it("routes image, video, music, and quota operations through the SDK", async () => {
+		const { tools, sdk } = captureRegistration();
+		await tools.minimax_generate_image.execute("id", { prompt: "A cat" });
+		await tools.minimax_video.execute("id", { action: "generate", prompt: "A sunset" });
+		await tools.minimax_generate_music.execute("id", { prompt: "Jazz", output_mode: "url" }, undefined, undefined, { cwd: process.cwd() });
+		await tools.minimax_quota.execute("id", {});
+		expect(sdk.image.generate).toHaveBeenCalled();
+		expect(sdk.video.generate).toHaveBeenCalled();
+		expect(sdk.music.generate).toHaveBeenCalled();
+		expect(sdk.quota.info).toHaveBeenCalled();
 	});
 });
 
@@ -325,33 +391,68 @@ describe("registered tools", () => {
 // The streaming/auth/host overrides are exercised by their dedicated suites.
 
 describe("provider registration", () => {
-	function provider() {
-		return captureRegistration().providers[0];
+	function providers() {
+		return captureRegistration().providers;
 	}
 
-	it("registers exactly one provider with id 'minimax'", () => {
-		const { providers } = captureRegistration();
-		expect(providers).toHaveLength(1);
-		expect(providers[0].name).toBe("minimax");
+	function provider(name = "minimax") {
+		const found = providers().find((entry) => entry.name === name);
+		if (!found) throw new Error(`Provider ${name} was not registered`);
+		return found;
+	}
+
+	it("replaces both international and China MiniMax providers", () => {
+		expect(providers().map((entry) => entry.name)).toEqual(["minimax", "minimax-cn"]);
 	});
 
 	it("uses api: 'anthropic-messages' so the SDK's anthropicMessagesApi handles streaming", () => {
 		expect(provider().config.api).toBe("anthropic-messages");
 	});
 
-	it("uses env-interpolation syntax ($MINIMAX_API_KEY) for the apiKey field", () => {
-		// Without the leading "$", the SDK's resolveConfigValue treats the string
-		// as a literal API key and would send "MINIMAX_API_KEY" as the Bearer
-		// token — guaranteeing a 401 if auth.json is ever missing.
-		expect(provider().config.apiKey).toBe("$MINIMAX_API_KEY");
+	it("uses the correct environment key for each regional provider", () => {
+		expect(provider("minimax").config.apiKey).toBe("$MINIMAX_API_KEY");
+		expect(provider("minimax-cn").config.apiKey).toBe("$MINIMAX_CN_API_KEY");
 	});
 
-	it("sets baseUrl to the env-aware /anthropic endpoint", () => {
-		delete process.env.MINIMAX_API_HOST;
-		expect(captureRegistration().providers[0].config.baseUrl).toBe("https://api.minimax.io/anthropic");
+	async function createRuntime(credentials = new InMemoryCredentialStore()) {
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+		for (const registration of providers()) {
+			runtime.registerProvider(registration.name, registration.config as never);
+		}
+		return { runtime, credentials };
+	}
 
-		process.env.MINIMAX_API_HOST = "https://api.minimaxi.com";
-		expect(captureRegistration().providers[0].config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
+	it("resolves both regional environment keys through Pi ModelRuntime", async () => {
+		const { runtime } = await createRuntime();
+		const global = await runtime.getAuth("minimax", { env: { MINIMAX_API_KEY: "global-key" } });
+		const china = await runtime.getAuth("minimax-cn", { env: { MINIMAX_CN_API_KEY: "china-key" } });
+		expect(global?.auth.apiKey).toBe("global-key");
+		expect(china?.auth.apiKey).toBe("china-key");
+	});
+
+	it("loads stored credentials for both providers before environment fallbacks", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("minimax", async () => ({ type: "api_key", key: "stored-global" }));
+		await credentials.modify("minimax-cn", async () => ({ type: "api_key", key: "stored-china" }));
+		const { runtime } = await createRuntime(credentials);
+		const global = await runtime.getAuth("minimax", { env: { MINIMAX_API_KEY: "env-global" } });
+		const china = await runtime.getAuth("minimax-cn", { env: { MINIMAX_CN_API_KEY: "env-china" } });
+		expect(global?.auth.apiKey).toBe("stored-global");
+		expect(china?.auth.apiKey).toBe("stored-china");
+	});
+
+	it("gives runtime API-key overrides highest priority", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("minimax", async () => ({ type: "api_key", key: "stored-key" }));
+		const { runtime } = await createRuntime(credentials);
+		await runtime.setRuntimeApiKey("minimax", "runtime-key");
+		const auth = await runtime.getAuth("minimax", { env: { MINIMAX_API_KEY: "env-key" } });
+		expect(auth?.auth.apiKey).toBe("runtime-key");
+	});
+
+	it("sets regional Anthropic base URLs independently", () => {
+		expect(provider("minimax").config.baseUrl).toBe("https://api.minimax.io/anthropic");
+		expect(provider("minimax-cn").config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
 	});
 
 	it("wires anthropicMessagesApi().streamSimple as the streaming implementation", () => {
@@ -359,22 +460,19 @@ describe("provider registration", () => {
 		expect(typeof streamSimple).toBe("function");
 	});
 
-	it("registers all 8 MiniMax models from MODELS, with id/name/cost/contextWindow/maxTokens preserved", () => {
-		const registered = provider().config.models ?? [];
-		expect(registered).toHaveLength(MODELS.length);
-
-		for (const source of MODELS) {
-			const found = registered.find((m) => m.id === source.id);
-			expect(found, `expected ${source.id} to be registered`).toBeDefined();
-			expect(found).toMatchObject({
-				id: source.id,
-				name: source.name,
-				reasoning: source.reasoning,
-				input: source.input,
-				cost: source.cost,
-				contextWindow: source.contextWindow,
-				maxTokens: source.maxTokens,
-			});
+	it("registers the full extension model list for both regions", () => {
+		for (const providerName of ["minimax", "minimax-cn"]) {
+			const registered = provider(providerName).config.models ?? [];
+			expect(registered).toHaveLength(MODELS.length);
+			for (const source of MODELS) {
+				expect(registered.find((m) => m.id === source.id)).toMatchObject({
+					id: source.id,
+					name: source.name,
+					cost: source.cost,
+					contextWindow: source.contextWindow,
+					maxTokens: source.maxTokens,
+				});
+			}
 		}
 	});
 

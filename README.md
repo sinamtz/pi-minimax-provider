@@ -10,7 +10,7 @@ A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for 
 ## Features
 
 - **Anthropic API Compatible**: Uses MiniMax's Anthropic-compatible endpoint for seamless integration
-- **Full Model Support**: `MiniMax-M3` (1M context, multimodal) and all M2 series models including highspeed variants
+- **Fast Model Updates**: Intentionally replaces Pi's built-in `minimax` and `minimax-cn` catalogs so new MiniMax models can ship without waiting for a Pi release
 - **Extended Context**: Up to 1,000,000 token context window on M3, 204,800 on M2 series
 - **Thinking Support**: Built-in reasoning/thinking capabilities (`adaptive` for M3, budget-based for M2 series)
 - **Cost Tracking**: Accurate token pricing for all models
@@ -65,9 +65,11 @@ cd pi-minimax-provider
 
 ### Set your API key
 
-Get your API key from the [MiniMax Platform](https://platform.minimax.io/user-center/basic-information/interface-key).
+For MiniMax Token Plan / coding-tool usage, get a **Subscription Key** from the [MiniMax Token Plan page](https://platform.minimax.io/user-center/payment/token-plan). For pay-as-you-go Open Platform usage, use an Open Platform API key from [Interface Key](https://platform.minimax.io/user-center/basic-information/interface-key).
 
-There are three ways to set your API key (in order of priority):
+This provider sends the key as an Anthropic-compatible bearer token to `https://api.minimax.io/anthropic` by default, matching MiniMax's coding-tool configuration reference.
+
+There are three ways to set your key (in order of priority):
 
 #### Option 1: Using `/login` (Recommended)
 
@@ -78,11 +80,11 @@ pi -e ./pi-minimax-provider
 /login
 ```
 
-This will prompt you to enter your API key, which is then securely stored in `~/.pi/agent/auth.json`.
+This will prompt you to enter your MiniMax key, which is then securely stored in `~/.pi/agent/auth.json`.
 
 #### Option 2: Edit auth.json manually
 
-Add your API key directly to the auth file:
+Add your MiniMax key directly to the auth file:
 
 ```json
 {
@@ -102,15 +104,16 @@ export MINIMAX_API_KEY=your-api-key-here
 pi -e ./pi-minimax-provider
 ```
 
-### Select a region (optional)
+### Select a region
 
-The provider defaults to the international MiniMax endpoint. For Mainland China accounts, set:
+The extension replaces both Pi MiniMax provider catalogs:
 
-```bash
-export MINIMAX_API_HOST=https://api.minimaxi.com
-```
+| Provider | Base URL | Environment key |
+|----------|----------|-----------------|
+| `minimax` | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
+| `minimax-cn` | `https://api.minimaxi.com/anthropic` | `MINIMAX_CN_API_KEY` |
 
-The same variable is also used by the native tools.
+Select the corresponding provider/model in Pi. Optional `MINIMAX_API_HOST` and `MINIMAX_CN_API_HOST` variables can override either endpoint for proxies or custom routing.
 
 ### Run pi with the extension
 
@@ -136,16 +139,20 @@ Or use the model selector UI. The provider registers the model id exactly as sho
 
 ## Native MiniMax Tools
 
-Pi does not consume MCP servers directly, so this extension exposes MiniMax capabilities as native Pi tools that call MiniMax HTTP APIs. You do **not** need to configure `minimax-mcp`, `minimax-coding-plan-mcp`, Python, or `uvx` to use these tools in Pi.
+Pi does not consume MCP servers directly, so this extension exposes MiniMax Token Plan capabilities as native Pi tools backed by MiniMax's official `mmx-cli/sdk`. The SDK is installed as a package dependency: users do **not** need a global `mmx` installation, MCP server, Python, or `uvx`.
 
 | Tool | Purpose |
 |------|---------|
 | `minimax_web_search` | Performs MiniMax web search and returns organic results plus related searches. |
 | `minimax_understand_image` | Analyzes JPEG, PNG, or WebP images from HTTP/HTTPS URLs, data URLs, or local file paths. |
-| `minimax_list_voices` | Lists available MiniMax system and cloned voices for the configured account. |
-| `minimax_text_to_audio` | Generates speech audio from text using MiniMax voices. Supports local `mp3`, `wav`, `flac`, and `pcm` output. |
+| `minimax_list_voices` | Lists available MiniMax Token Plan speech voices. |
+| `minimax_text_to_audio` | Generates speech audio using MiniMax voices, with URL or safe local-file output. |
+| `minimax_generate_image` | Generates images and returns their URLs. |
+| `minimax_video` | Generates videos, checks task status, and downloads completed videos. |
+| `minimax_generate_music` | Generates music with optional lyrics or instrumental mode. |
+| `minimax_quota` | Shows Token Plan quota and usage. |
 
-These tools use the same MiniMax API key as the provider. They call `MINIMAX_API_HOST` if set, otherwise `https://api.minimax.io`.
+Tools resolve credentials through Pi's model registry first, so `/login` and `auth.json` work. They then fall back to `MINIMAX_API_KEY` or `MINIMAX_CN_API_KEY`. Set `MINIMAX_REGION=global|cn` to select a region explicitly; host overrides remain available through `MINIMAX_API_HOST`, `MINIMAX_CN_API_HOST`, or the official SDK's `MINIMAX_BASE_URL`.
 
 ### Tool examples
 
@@ -167,10 +174,13 @@ List voices:
 Use MiniMax to list available system voices.
 ```
 
-Generate speech:
+Generate speech, images, video, or music:
 
 ```text
 Use MiniMax text to speech to create an mp3 saying: Hello from Pi and MiniMax.
+Generate a MiniMax image of a cyberpunk city at night.
+Start a MiniMax video generation task showing ocean waves at sunset.
+Generate an instrumental MiniMax jazz track.
 ```
 
 ### Output handling
@@ -179,7 +189,7 @@ Use MiniMax text to speech to create an mp3 saying: Hello from Pi and MiniMax.
 
 ### Cost
 
-Speech generation may incur MiniMax usage costs. Voice cloning and async long-form TTS are intentionally out of scope for this first native tool set.
+These capabilities consume MiniMax Token Plan quota. Use `minimax_quota` to inspect remaining usage. Voice cloning is not exposed because of consent, privacy, and cost considerations.
 
 ## Prompt Caching
 
@@ -199,8 +209,8 @@ Pricing is approximate and in USD per million tokens for pay-as-you-go standard 
 
 | Model | Input | Output | Cache Read | Cache Write |
 |-------|-------|--------|------------|-------------|
-| M3 ≤512k input tokens | $0.60 | $2.40 | $0.12 | Not listed / no passive-cache write charge |
-| M3 >512k input tokens | $1.20 | $4.80 | $0.24 | Not listed / no passive-cache write charge |
+| M3 ≤512k input tokens | $0.30 | $1.20 | $0.06 | Not listed / no passive-cache write charge |
+| M3 >512k input tokens | $0.60 | $2.40 | $0.12 | Not listed / no passive-cache write charge |
 | M2.7 | $0.30 | $1.20 | $0.06 | $0.375 |
 | M2.7-highspeed | $0.60 | $2.40 | $0.06 | $0.375 |
 | M2.5 | $0.30 | $1.20 | $0.03 | $0.375 |
@@ -213,10 +223,14 @@ MiniMax may run temporary discounts or priority-tier pricing that differs from t
 
 ## API Details
 
-- **Base URL**: `https://api.minimax.io/anthropic`
+- **International Base URL**: `https://api.minimax.io/anthropic`
+- **Mainland China Base URL**: `https://api.minimaxi.com/anthropic`
+- **Provider behavior**: intentionally replaces Pi's built-in `minimax` and `minimax-cn` model lists with this package's faster-moving catalog
 - **Tool endpoints**: `/v1/coding_plan/search`, `/v1/coding_plan/vlm`, `/v1/get_voice`, `/v1/t2a_v2`
 - **Protocol**: Anthropic Messages API compatible
 - **Authentication**: Bearer token
+  - For Token Plan / coding-tool usage, use a MiniMax Subscription Key
+  - For pay-as-you-go usage, use an Open Platform API key
   - Priority: `options.apiKey` > `auth.json` (via `/login`) > environment variable `MINIMAX_API_KEY`
 - **Streaming**: Full streaming support; usage events include input/output, cache read, and cache write token counts
 
@@ -250,6 +264,13 @@ Tests run against the published MiniMax HTTP shapes (mocked), so no live API cal
 - If requests time out or return auth errors, set `MINIMAX_API_HOST` to the correct regional endpoint (e.g. `https://api.minimaxi.com` for Mainland China)
 
 ## Changelog
+
+### v1.1.6
+- Replace both Pi `minimax` and `minimax-cn` catalogs with the extension's faster-moving model list
+- Use MiniMax's official `mmx-cli/sdk` for native Token Plan tools
+- Add image generation, video operations, music generation, and quota tools
+- Resolve tool credentials through Pi's model registry, including `/login` and `auth.json`
+- Update M3 pricing and Token Plan documentation from current MiniMax docs
 
 ### v1.1.1
 - Documentation: clarify supported models, output caps, region selection, prompt caching behavior, and add a development/test section

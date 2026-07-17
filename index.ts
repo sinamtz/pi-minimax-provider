@@ -19,12 +19,12 @@
  */
 
 import {
-	StringEnum,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { MiniMaxSDK, type Region } from "mmx-cli/sdk";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { createHash } from "node:crypto";
@@ -35,6 +35,7 @@ import { dirname, extname, resolve } from "node:path";
 // =============================================================================
 
 const MINIMAX_API_HOST = "https://api.minimax.io";
+const MINIMAX_CN_API_HOST = "https://api.minimaxi.com";
 const MINIMAX_API_SOURCE = "Pi-MiniMax-Provider";
 
 // =============================================================================
@@ -62,7 +63,7 @@ export const MODELS: MiniMaxModel[] = [
 		name: "MiniMax M3",
 		reasoning: true,
 		input: ["text", "image"],
-		cost: { input: 0.60, output: 2.40, cacheRead: 0.12, cacheWrite: 0 },
+		cost: { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
 		contextWindow: 1000000,
 		maxTokens: 524288,
 		description: "Frontier multimodal coding model with 1M context window",
@@ -180,18 +181,47 @@ export function getMiniMaxApiBase(): string {
 	return `${getMiniMaxApiHost()}/anthropic`;
 }
 
+/** Resolve the Mainland China Anthropic-compatible endpoint. */
+export function getMiniMaxCnApiBase(): string {
+	const host = (process.env.MINIMAX_CN_API_HOST || MINIMAX_CN_API_HOST).replace(/\/$/, "");
+	return `${host}/anthropic`;
+}
+
 /**
  * Get the MiniMax API key for native tools.  Priority:
  * 1. `options.apiKey` — SDK pre-resolved key (covers runtime overrides, login,
  *    and provider-scoped env)
  * 2. `process.env.MINIMAX_API_KEY` — ambient env fallback
  */
-export async function getRequiredMiniMaxApiKey(options?: SimpleStreamOptions): Promise<string> {
-	const apiKey = options?.apiKey ?? process.env.MINIMAX_API_KEY ?? "";
+export function getMiniMaxToolRegion(): Region {
+	const configured = process.env.MINIMAX_REGION;
+	if (configured === "global" || configured === "cn") return configured;
+	if (getMiniMaxApiHost().includes("minimaxi.com")) return "cn";
+	if (!process.env.MINIMAX_API_KEY && process.env.MINIMAX_CN_API_KEY) return "cn";
+	return "global";
+}
+
+export async function getRequiredMiniMaxApiKey(options?: SimpleStreamOptions, region = getMiniMaxToolRegion()): Promise<string> {
+	const regionalKey = region === "cn" ? process.env.MINIMAX_CN_API_KEY : process.env.MINIMAX_API_KEY;
+	const fallbackKey = region === "cn" ? process.env.MINIMAX_API_KEY : process.env.MINIMAX_CN_API_KEY;
+	const apiKey = options?.apiKey ?? regionalKey ?? fallbackKey ?? "";
 	if (!apiKey) {
-		throw new Error("MiniMax API key is required. Use /login for the minimax provider or set MINIMAX_API_KEY.");
+		throw new Error("MiniMax API key is required. Use /login for minimax/minimax-cn or set MINIMAX_API_KEY/MINIMAX_CN_API_KEY.");
 	}
 	return apiKey;
+}
+
+export async function createMiniMaxToolsSdk(options?: SimpleStreamOptions): Promise<MiniMaxSDK> {
+	const region = getMiniMaxToolRegion();
+	const apiKey = await getRequiredMiniMaxApiKey(options, region);
+	const regionalHost = region === "cn"
+		? (process.env.MINIMAX_CN_API_HOST || MINIMAX_CN_API_HOST).replace(/\/$/, "")
+		: getMiniMaxApiHost();
+	return new MiniMaxSDK({
+		apiKey,
+		region,
+		baseUrl: process.env.MINIMAX_BASE_URL || regionalHost,
+	});
 }
 
 export const VOICE_TYPE_VALUES = ["all", "system", "voice_cloning"] as const;
@@ -202,15 +232,13 @@ export const SAMPLE_RATE_VALUES = [8000, 16000, 22050, 24000, 32000, 44100] as c
 export const BITRATE_VALUES = [32000, 64000, 128000, 256000] as const;
 export const CHANNEL_VALUES = [1, 2] as const;
 
-const VoiceTypeSchema = StringEnum(VOICE_TYPE_VALUES);
-const SpeechEmotionSchema = StringEnum(SPEECH_EMOTION_VALUES);
-const AudioFormatSchema = StringEnum(AUDIO_FORMAT_VALUES);
-const OutputModeSchema = StringEnum(OUTPUT_MODE_VALUES);
+const SpeechEmotionSchema = Type.Union(SPEECH_EMOTION_VALUES.map((value) => Type.Literal(value)));
+const AudioFormatSchema = Type.Union(AUDIO_FORMAT_VALUES.map((value) => Type.Literal(value)));
+const OutputModeSchema = Type.Union(OUTPUT_MODE_VALUES.map((value) => Type.Literal(value)));
 const SampleRateSchema = Type.Union(SAMPLE_RATE_VALUES.map((value) => Type.Literal(value)));
 const BitrateSchema = Type.Union(BITRATE_VALUES.map((value) => Type.Literal(value)));
 const ChannelSchema = Type.Union(CHANNEL_VALUES.map((value) => Type.Literal(value)));
 
-type VoiceType = typeof VOICE_TYPE_VALUES[number];
 type SpeechEmotion = typeof SPEECH_EMOTION_VALUES[number];
 type AudioFormat = typeof AUDIO_FORMAT_VALUES[number];
 type OutputMode = typeof OUTPUT_MODE_VALUES[number];
@@ -469,181 +497,195 @@ export function formatVoiceList(data: Record<string, unknown>): string {
  * Pi extension entry point.
  * Registers the MiniMax provider with all M2 series models.
  */
-export default function (pi: ExtensionAPI) {
+export type MiniMaxSdkFactory = (options?: SimpleStreamOptions) => Promise<MiniMaxSDK>;
+
+export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = createMiniMaxToolsSdk) {
+	const getToolsSdk = async (ctx?: { modelRegistry?: { getApiKeyForProvider(provider: string): Promise<string | undefined> } }) => {
+		const provider = getMiniMaxToolRegion() === "cn" ? "minimax-cn" : "minimax";
+		const apiKey = await ctx?.modelRegistry?.getApiKeyForProvider(provider);
+		return sdkFactory(apiKey ? { apiKey } : undefined);
+	};
 	pi.registerTool({
 		name: "minimax_web_search",
 		label: "MiniMax Web Search",
-		description: "Search the web using MiniMax's Token/Coding Plan web search endpoint.",
-		promptSnippet: "Search the web via MiniMax Token/Coding Plan when current external information is needed",
-		promptGuidelines: [
-			"Use minimax_web_search when the user specifically asks to use MiniMax search or when MiniMax Token/Coding Plan search is preferred for current external information.",
-			"For minimax_web_search, use concise 3-5 keyword queries and include dates for time-sensitive topics.",
-		],
-		parameters: Type.Object({
-			query: Type.String({ description: "Search query. Aim for 3-5 keywords for best results." }),
-		}),
-		async execute(_toolCallId, params, signal) {
-			const query = assertNonEmpty(params.query, "Query");
-			const data = await callMiniMaxJson(
-				"/v1/coding_plan/search",
-				{ q: query },
-				await getRequiredMiniMaxApiKey(),
-				signal,
-			);
-			return {
-				content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-				details: data,
-			};
+		description: "Search the web using the official MiniMax Token Plan SDK.",
+		parameters: Type.Object({ query: Type.String({ description: "Concise search query." }) }),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const data = await (await getToolsSdk(ctx)).search.query(assertNonEmpty(params.query, "Query"));
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], details: data };
 		},
 	});
 
 	pi.registerTool({
 		name: "minimax_understand_image",
 		label: "MiniMax Understand Image",
-		description: "Analyze a JPEG, PNG, or WebP image using MiniMax's Token/Coding Plan image understanding endpoint.",
-		promptSnippet: "Analyze images via MiniMax Token/Coding Plan from a URL or local file path",
-		promptGuidelines: [
-			"Use minimax_understand_image when the user specifically asks to use MiniMax vision or when MiniMax image understanding is preferred.",
-			"For minimax_understand_image, strip a leading @ from local image paths and provide a task-specific prompt describing what to inspect or extract.",
-		],
+		description: "Analyze an image using the official MiniMax Token Plan SDK.",
 		parameters: Type.Object({
-			prompt: Type.String({ description: "Question or analysis request for the image." }),
-			image_source: Type.String({ description: "HTTP/HTTPS URL, data URL, absolute path, or path relative to the current working directory. JPEG, PNG, and WebP are supported." }),
+			prompt: Type.String({ description: "Question or analysis request." }),
+			image_source: Type.String({ description: "Image URL, data URL, absolute path, or cwd-relative path." }),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const prompt = assertNonEmpty(params.prompt, "Prompt");
-			const imageUrl = await imageSourceToDataUrl(params.image_source, ctx.cwd, signal);
-			const data = await callMiniMaxJson(
-				"/v1/coding_plan/vlm",
-				{ prompt, image_url: imageUrl },
-				await getRequiredMiniMaxApiKey(),
-				signal,
-			);
-			if (typeof data.content !== "string" || !data.content) {
-				throw new Error("No image analysis content returned from MiniMax.");
-			}
-			return {
-				content: [{ type: "text", text: data.content }],
-				details: data,
-			};
+			const image = await imageSourceToDataUrl(params.image_source, ctx.cwd, signal);
+			const data = await (await getToolsSdk(ctx)).vision.describe({ image, prompt: assertNonEmpty(params.prompt, "Prompt") });
+			return { content: [{ type: "text", text: data.content }], details: data };
 		},
 	});
 
 	pi.registerTool({
 		name: "minimax_list_voices",
 		label: "MiniMax List Voices",
-		description: "List MiniMax system and cloned voices available to the configured account.",
-		promptSnippet: "List MiniMax speech voices before text-to-speech when voice choice matters",
-		promptGuidelines: [
-			"Use minimax_list_voices before minimax_text_to_audio if the user asks what voices are available or voice choice matters.",
-			"Do not call minimax_list_voices repeatedly unless the user asks to refresh available voices.",
-		],
-		parameters: Type.Object({
-			voice_type: Type.Optional(VoiceTypeSchema),
-		}),
-		async execute(_toolCallId, params, signal) {
-			const voiceType = (params.voice_type || "all") as VoiceType;
-			if (!VOICE_TYPE_VALUES.includes(voiceType)) {
-				throw new Error(`Voice type must be one of: ${VOICE_TYPE_VALUES.join(", ")}.`);
-			}
-			const data = await callMiniMaxJson(
-				"/v1/get_voice",
-				{ voice_type: voiceType },
-				await getRequiredMiniMaxApiKey(),
-				signal,
-			);
-			return {
-				content: [{ type: "text", text: formatVoiceList(data) }],
-				details: data,
-			};
+		description: "List MiniMax Token Plan speech voices.",
+		parameters: Type.Object({ language: Type.Optional(Type.String({ description: "Optional language filter such as en or zh." })) }),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const voices = await (await getToolsSdk(ctx)).speech.voices(params.language);
+			const text = voices.length
+				? voices.map((voice) => `- ${voice.voice_name}: ${voice.voice_id}${voice.description?.length ? ` — ${voice.description.join(", ")}` : ""}`).join("\n")
+				: "No voices returned.";
+			return { content: [{ type: "text", text }], details: { voices } };
 		},
 	});
 
 	pi.registerTool({
 		name: "minimax_text_to_audio",
 		label: "MiniMax Text to Audio",
-		description: "Generate speech audio from text using MiniMax voices. This may incur MiniMax usage costs.",
-		promptSnippet: "Generate MiniMax speech audio from text only when the user explicitly requests audio output",
-		promptGuidelines: [
-			"Use minimax_text_to_audio only when the user explicitly requests speech or audio generation; this tool may incur MiniMax costs.",
-			"Use minimax_list_voices first if the user needs to choose a voice before generating speech.",
-			"For minimax_text_to_audio local output, do not overwrite existing files unless the user explicitly requests replacement.",
-		],
+		description: "Generate speech with the official MiniMax Token Plan SDK.",
 		parameters: Type.Object({
-			text: Type.String({ description: "Text to synthesize." }),
-			output_path: Type.Optional(Type.String({ description: "Optional local output file or directory." })),
-			voice_id: Type.Optional(Type.String({ description: "MiniMax voice identifier." })),
-			model: Type.Optional(Type.String({ description: "MiniMax speech model." })),
-			speed: Type.Optional(Type.Number({ minimum: 0.5, maximum: 2 })),
-			volume: Type.Optional(Type.Number({ minimum: 0, maximum: 10 })),
-			pitch: Type.Optional(Type.Integer({ minimum: -12, maximum: 12 })),
-			emotion: Type.Optional(SpeechEmotionSchema),
-			sample_rate: Type.Optional(SampleRateSchema),
-			bitrate: Type.Optional(BitrateSchema),
-			channel: Type.Optional(ChannelSchema),
-			format: Type.Optional(AudioFormatSchema),
-			language_boost: Type.Optional(Type.String()),
-			output_mode: Type.Optional(OutputModeSchema),
-			allow_overwrite: Type.Optional(Type.Boolean({ description: "Whether an existing local output file may be replaced. Defaults to false." })),
+			text: Type.String(), output_path: Type.Optional(Type.String()), voice_id: Type.Optional(Type.String()), model: Type.Optional(Type.String()),
+			speed: Type.Optional(Type.Number({ minimum: 0.5, maximum: 2 })), volume: Type.Optional(Type.Number({ minimum: 0, maximum: 10 })),
+			pitch: Type.Optional(Type.Integer({ minimum: -12, maximum: 12 })), emotion: Type.Optional(SpeechEmotionSchema),
+			sample_rate: Type.Optional(SampleRateSchema), bitrate: Type.Optional(BitrateSchema), channel: Type.Optional(ChannelSchema),
+			format: Type.Optional(AudioFormatSchema), language_boost: Type.Optional(Type.String()), output_mode: Type.Optional(OutputModeSchema),
+			allow_overwrite: Type.Optional(Type.Boolean()),
 		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const options = resolveSpeechOptions(params as Partial<SpeechOptions> & { text: string });
-			const data = await callMiniMaxJson(
-				"/v1/t2a_v2",
-				buildTextToAudioPayload(options),
-				await getRequiredMiniMaxApiKey(),
-				signal,
-			);
-			const audio = (data.data as { audio?: unknown } | undefined)?.audio;
-			if (typeof audio !== "string" || !audio) {
-				throw new Error("No audio data returned from MiniMax.");
-			}
-
-			if (options.output_mode === "url") {
-				return {
-					content: [{ type: "text", text: `Success. Audio URL: ${audio}\nVoice used: ${options.voice_id}\nModel: ${options.model}` }],
-					details: { mode: "url", path: null, url: audio, voice_id: options.voice_id, model: options.model, format: options.format, extra_info: data.extra_info || {} },
-				};
-			}
-
-			const outputPath = await writeMiniMaxAudioFile({
-				hexAudio: audio,
-				outputPath: options.output_path,
-				cwd: ctx.cwd,
-				format: options.format,
-				text: options.text,
-				allowOverwrite: options.allow_overwrite,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const options = resolveSpeechOptions(params as unknown as Partial<SpeechOptions> & { text: string });
+			const sdk = await getToolsSdk(ctx);
+			const data = await sdk.speech.synthesize({
+				model: options.model, text: options.text,
+				voice_setting: { voice_id: options.voice_id, speed: options.speed, vol: options.volume, pitch: options.pitch },
+				audio_setting: { format: options.format, sample_rate: options.sample_rate, bitrate: options.bitrate, channel: options.channel },
+				language_boost: options.language_boost, output_format: options.output_mode === "url" ? "url" : "hex",
 			});
-			return {
-				content: [{ type: "text", text: `Success. Audio saved to: ${outputPath}\nVoice used: ${options.voice_id}\nModel: ${options.model}\nFormat: ${options.format}` }],
-				details: { mode: "local", path: outputPath, url: null, voice_id: options.voice_id, model: options.model, format: options.format, extra_info: data.extra_info || {} },
-			};
+			const audio = data.data.audio_url || data.data.audio;
+			if (!audio) throw new Error("No audio data returned from MiniMax.");
+			if (options.output_mode === "url") {
+				return { content: [{ type: "text", text: `Success. Audio URL: ${audio}` }], details: { mode: "url", url: audio, ...data.extra_info } };
+			}
+			const outputPath = await writeMiniMaxAudioFile({ hexAudio: audio, outputPath: options.output_path, cwd: ctx.cwd, format: options.format, text: options.text, allowOverwrite: options.allow_overwrite });
+			return { content: [{ type: "text", text: `Success. Audio saved to: ${outputPath}` }], details: { mode: "local", path: outputPath, ...data.extra_info } };
 		},
 	});
 
+	pi.registerTool({
+		name: "minimax_generate_image",
+		label: "MiniMax Generate Image",
+		description: "Generate images using the official MiniMax Token Plan SDK.",
+		parameters: Type.Object({
+			prompt: Type.String(), model: Type.Optional(Type.String()), aspect_ratio: Type.Optional(Type.String()),
+			n: Type.Optional(Type.Integer({ minimum: 1, maximum: 4 })), seed: Type.Optional(Type.Integer()),
+			width: Type.Optional(Type.Integer()), height: Type.Optional(Type.Integer()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const data = await (await getToolsSdk(ctx)).image.generate({ model: params.model, prompt: assertNonEmpty(params.prompt, "Prompt"), aspect_ratio: params.aspect_ratio, n: params.n, seed: params.seed, width: params.width, height: params.height, response_format: "url" });
+			const urls = data.data.image_urls || [];
+			return { content: [{ type: "text", text: urls.length ? urls.join("\n") : JSON.stringify(data, null, 2) }], details: data };
+		},
+	});
+
+	pi.registerTool({
+		name: "minimax_video",
+		label: "MiniMax Video",
+		description: "Generate, inspect, or download MiniMax videos with the official Token Plan SDK.",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("generate"), Type.Literal("status"), Type.Literal("download")]),
+			prompt: Type.Optional(Type.String()), model: Type.Optional(Type.String()), task_id: Type.Optional(Type.String()),
+			file_id: Type.Optional(Type.String()), output_path: Type.Optional(Type.String()), wait: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const sdk = await getToolsSdk(ctx);
+			if (params.action === "generate") {
+				const prompt = assertNonEmpty(params.prompt, "Prompt");
+				const data = params.wait
+					? await sdk.video.generate({ model: params.model, prompt })
+					: await sdk.video.generate({ model: params.model, prompt, async: true });
+				return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], details: data };
+			}
+			if (params.action === "status") {
+				const data = await sdk.video.getTask({ taskId: assertNonEmpty(params.task_id, "Task ID") });
+				return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], details: data };
+			}
+			const fileId = assertNonEmpty(params.file_id, "File ID");
+			const outputPath = resolve(ctx.cwd, params.output_path || `minimax-video-${fileId}.mp4`);
+			if (await pathExists(outputPath)) throw new Error(`Refusing to overwrite existing video file: ${outputPath}`);
+			const data = await sdk.video.download({ fileId, outPath: outputPath });
+			return { content: [{ type: "text", text: `Video saved to: ${data.save}` }], details: data };
+		},
+	});
+
+	pi.registerTool({
+		name: "minimax_generate_music",
+		label: "MiniMax Generate Music",
+		description: "Generate music using the official MiniMax Token Plan SDK.",
+		parameters: Type.Object({
+			prompt: Type.String(), lyrics: Type.Optional(Type.String()), model: Type.Optional(Type.String()), instrumental: Type.Optional(Type.Boolean()),
+			output_mode: Type.Optional(OutputModeSchema), output_path: Type.Optional(Type.String()), format: Type.Optional(AudioFormatSchema), allow_overwrite: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const outputMode = (params.output_mode || "url") as OutputMode;
+			const format = (params.format || "mp3") as AudioFormat;
+			const data = await (await getToolsSdk(ctx)).music.generate({ model: params.model, prompt: assertNonEmpty(params.prompt, "Prompt"), lyrics: params.lyrics, instrumental: params.instrumental, output_format: outputMode === "url" ? "url" : "hex", audio_setting: { format } });
+			const audio = data.data.audio_url || data.data.audio;
+			if (!audio) throw new Error("No music audio returned from MiniMax.");
+			if (outputMode === "url") return { content: [{ type: "text", text: `Music URL: ${audio}` }], details: data };
+			const path = await writeMiniMaxAudioFile({ hexAudio: audio, outputPath: params.output_path, cwd: ctx.cwd, format, text: params.prompt, allowOverwrite: params.allow_overwrite });
+			return { content: [{ type: "text", text: `Music saved to: ${path}` }], details: { ...data, path } };
+		},
+	});
+
+	pi.registerTool({
+		name: "minimax_quota",
+		label: "MiniMax Quota",
+		description: "Show MiniMax Token Plan quota and usage.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const data = await (await getToolsSdk(ctx)).quota.info();
+			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], details: data };
+		},
+	});
+
+	const api = anthropicMessagesApi();
+	const models = () => MODELS.map((m) => {
+		// M3 supports adaptive thinking; M2 series are budget-based. The SDK's
+		// Anthropic implementation handles both when this compatibility flag is set.
+		const compat = m.id === "MiniMax-M3" ? { forceAdaptiveThinking: true } : undefined;
+		return {
+			id: m.id,
+			name: m.name,
+			reasoning: m.reasoning,
+			input: m.input,
+			cost: m.cost,
+			contextWindow: m.contextWindow,
+			maxTokens: m.maxTokens,
+			...(compat ? { compat } : {}),
+		};
+	});
+
+	// Intentionally replace Pi's built-in catalogs so newly released MiniMax
+	// models can be shipped by this extension without waiting for a Pi release.
 	pi.registerProvider("minimax", {
 		baseUrl: getMiniMaxApiBase(),
-		// Use the SDK's standard env-interpolation syntax.  Without "$", the SDK
-		// would treat the string as a literal API key and send "MINIMAX_API_KEY"
-		// as the Bearer token.
 		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
-		streamSimple: anthropicMessagesApi().streamSimple,
-		models: MODELS.map((m) => {
-			// M3 supports adaptive thinking; M2 series are budget-based.  The
-			// SDK's anthropicMessagesApi handles both modes transparently when
-			// compat.forceAdaptiveThinking is set on the model.
-			const compat = m.id === "MiniMax-M3" ? { forceAdaptiveThinking: true } : undefined;
-			return {
-				id: m.id,
-				name: m.name,
-				reasoning: m.reasoning,
-				input: m.input,
-				cost: m.cost,
-				contextWindow: m.contextWindow,
-				maxTokens: m.maxTokens,
-				...(compat ? { compat } : {}),
-			};
-		}),
+		streamSimple: api.streamSimple,
+		models: models(),
+	});
+
+	pi.registerProvider("minimax-cn", {
+		name: "MiniMax CN",
+		baseUrl: getMiniMaxCnApiBase(),
+		apiKey: "$MINIMAX_CN_API_KEY",
+		api: "anthropic-messages",
+		streamSimple: api.streamSimple,
+		models: models(),
 	});
 }

@@ -1,6 +1,6 @@
 {
   "name": "@sinamtz/pi-minimax-provider",
-  "version": "1.1.4",
+  "version": "1.1.6",
   "description": "Pi coding agent provider for MiniMax AI with M3, Anthropic-compatible streaming, and native MiniMax tools",
   "type": "module",
   "main": "dist/index.js",
@@ -64,6 +64,7 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.49",
+    "mmx-cli": "^1.0.18"
   }
 }
