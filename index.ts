@@ -32,9 +32,9 @@ import {
 	type ThinkingContent,
 	type ToolCall,
 	StringEnum,
-} from "@mariozechner/pi-ai";
-import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
+import { AuthStorage, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";

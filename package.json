@@ -55,8 +55,8 @@
     ]
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.62.0",
-    "@mariozechner/pi-coding-agent": "^0.62.0",
+    "@earendil-works/pi-ai": "^0.80.10",
+    "@earendil-works/pi-coding-agent": "^0.80.10",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
     "eslint": "^10.2.0",
