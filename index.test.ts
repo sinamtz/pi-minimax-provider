@@ -455,9 +455,13 @@ describe("provider registration", () => {
 		expect(provider("minimax-cn").config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
 	});
 
-	it("wires anthropicMessagesApi().streamSimple as the streaming implementation", () => {
+	it("either wires anthropicMessagesApi().streamSimple or leaves it undefined (issue #11)", () => {
+		// On hosts that expose @earendil-works/pi-ai/compat (pi-ai@0.80.x) we get
+		// the SDK's streamSimple; on hosts without it (omp's @oh-my-pi/pi-ai@18.x)
+		// we leave it undefined and let the host's built-in anthropic-messages
+		// provider handle streaming via the registered baseUrl/apiKey.
 		const streamSimple = provider().config.streamSimple;
-		expect(typeof streamSimple).toBe("function");
+		expect(streamSimple === undefined || typeof streamSimple === "function").toBe(true);
 	});
 
 	it("registers the full extension model list for both regions", () => {

@@ -21,7 +21,6 @@
 import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { MiniMaxSDK, type Region } from "mmx-cli/sdk";
@@ -490,6 +489,37 @@ export function formatVoiceList(data: Record<string, unknown>): string {
 
 
 // =============================================================================
+// Optional SDK streaming import
+// =============================================================================
+//
+// The upstream `pi-ai@0.80.x` ships an `@earendil-works/pi-ai/compat` entry that
+// exposes a ready-made `anthropicMessagesApi()` factory. omp's bundled
+// `@oh-my-pi/pi-ai@18.x` does not expose that entry, so a static import would
+// break extension loading. We probe for the compat entry at module load time
+// and fall back to `undefined`; without `streamSimple`, `pi.registerProvider`
+// delegates streaming to the host's built-in anthropic-messages provider, which
+// reads `model.baseUrl` and `model.apiKey` from the registered overlay — the
+// exact behavior the plugin needs to hit `https://api.minimax.io/anthropic`
+// with `MINIMAX_API_KEY`.
+type StreamSimpleFn = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["streamSimple"]>;
+
+async function loadStreamSimple(): Promise<StreamSimpleFn | undefined> {
+	try {
+		const compat = await import("@earendil-works/pi-ai/compat");
+		const factory = (compat as { anthropicMessagesApi?: () => { streamSimple: StreamSimpleFn } }).anthropicMessagesApi;
+		if (typeof factory !== "function") return undefined;
+		return factory().streamSimple;
+	} catch {
+		return undefined;
+	}
+}
+
+// Resolved once at module load. A failing dynamic import (e.g. omp's bundled
+// pi-ai omits the compat subpath) is caught inside loadStreamSimple and leaves
+// this as `undefined`, so downstream callers stay synchronous.
+const sdkStreamSimple: StreamSimpleFn | undefined = await loadStreamSimple();
+
+// =============================================================================
 // Extension Entry Point
 // =============================================================================
 
@@ -653,7 +683,8 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		},
 	});
 
-	const api = anthropicMessagesApi();
+	// Resolve SDK streaming lazily; see loadStreamSimple() below.
+	const streamSimple = sdkStreamSimple;
 	const models = () => MODELS.map((m) => {
 		// M3 supports adaptive thinking; M2 series are budget-based. The SDK's
 		// Anthropic implementation handles both when this compatibility flag is set.
@@ -676,7 +707,7 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		baseUrl: getMiniMaxApiBase(),
 		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
-		streamSimple: api.streamSimple,
+		streamSimple,
 		models: models(),
 	});
 
@@ -685,7 +716,7 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		baseUrl: getMiniMaxCnApiBase(),
 		apiKey: "$MINIMAX_CN_API_KEY",
 		api: "anthropic-messages",
-		streamSimple: api.streamSimple,
+		streamSimple,
 		models: models(),
 	});
 }
