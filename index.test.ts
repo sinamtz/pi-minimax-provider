@@ -471,9 +471,9 @@ describe("provider registration", () => {
 		expect(provider("minimax-cn").config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
 	});
 
-	it("wires anthropicMessagesApi().streamSimple as the streaming implementation", () => {
+	it("lets Pi handle anthropic-messages streaming natively without an overriding streamSimple", () => {
 		const streamSimple = provider().config.streamSimple;
-		expect(typeof streamSimple).toBe("function");
+		expect(streamSimple).toBeUndefined();
 	});
 
 	it("registers the full extension model list for both regions", () => {
@@ -492,13 +492,24 @@ describe("provider registration", () => {
 		}
 	});
 
-	it("enables compat.forceAdaptiveThinking on M3 and M3.1 only", () => {
+	it("enables compat.forceAdaptiveThinking and configures thinkingLevelMap", () => {
 		const registered = provider().config.models ?? [];
 		for (const model of registered) {
 			if (model.id === "MiniMax-M3" || model.id === "MiniMax-M3.1-Flash") {
 				expect(model.compat).toEqual({ forceAdaptiveThinking: true });
 			} else {
 				expect(model.compat).toBeUndefined();
+			}
+			if (model.id === "MiniMax-M3.1-Flash") {
+				expect((model as { thinkingLevelMap?: Record<string, string | null> }).thinkingLevelMap).toEqual({
+					off: null,
+					minimal: null,
+					low: "low",
+					medium: "medium",
+					high: "high",
+					xhigh: "xhigh",
+					max: "max",
+				});
 			}
 		}
 	});
