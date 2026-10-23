@@ -57,6 +57,18 @@ interface MiniMaxModel {
 
 
 export const MODELS: MiniMaxModel[] = [
+	// MiniMax M3.1 Series
+	{
+		id: "MiniMax-M3.1-Flash",
+		name: "MiniMax M3.1 Flash",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0.15, output: 0.60, cacheRead: 0.015, cacheWrite: 0 },
+		contextWindow: 1000000,
+		maxTokens: 524288,
+		description: "Frontier multimodal MoE model with 1M context window and adaptive thinking",
+		speed: "standard",
+	},
 	// MiniMax M3
 	{
 		id: "MiniMax-M3",
@@ -655,9 +667,9 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 
 	const api = anthropicMessagesApi();
 	const models = () => MODELS.map((m) => {
-		// M3 supports adaptive thinking; M2 series are budget-based. The SDK's
+		// M3 and M3.1 series support adaptive thinking; M2 series are budget-based. The SDK's
 		// Anthropic implementation handles both when this compatibility flag is set.
-		const compat = m.id === "MiniMax-M3" ? { forceAdaptiveThinking: true } : undefined;
+		const compat = (m.id === "MiniMax-M3" || m.id === "MiniMax-M3.1-Flash") ? { forceAdaptiveThinking: true } : undefined;
 		return {
 			id: m.id,
 			name: m.name,
