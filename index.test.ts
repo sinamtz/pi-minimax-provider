@@ -96,6 +96,17 @@ function captureRegistration(sdk = createFakeSdk()) {
 }
 
 describe("models", () => {
+	it("includes MiniMax-M3.1-Flash with 1M context, 524288 maxTokens, and image input", () => {
+		const m31 = MODELS.find((model) => model.id === "MiniMax-M3.1-Flash");
+		expect(m31).toMatchObject({
+			contextWindow: 1000000,
+			maxTokens: 524288,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0.15, output: 0.60, cacheRead: 0.015, cacheWrite: 0 },
+		});
+	});
+
 	it("includes MiniMax-M3 with 1M context, 524288 maxTokens, and image input", () => {
 		// M3 is the headline model.  The README documents MiniMax's current
 		// permanent-discount pricing of $0.30 / $1.20 per million tokens at ≤512k
@@ -126,6 +137,7 @@ describe("models", () => {
 			"MiniMax-M2.7",
 			"MiniMax-M2.7-highspeed",
 			"MiniMax-M3",
+			"MiniMax-M3.1-Flash",
 		]);
 	});
 
@@ -133,6 +145,7 @@ describe("models", () => {
 		// Snapshot test: any drift here means the pricing page in the README
 		// needs to be updated alongside the code change.
 		const expected: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
+			"MiniMax-M3.1-Flash": { input: 0.15, output: 0.60, cacheRead: 0.015, cacheWrite: 0 },
 			"MiniMax-M3": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
 			"MiniMax-M2.7": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0.375 },
 			"MiniMax-M2.7-highspeed": { input: 0.60, output: 2.40, cacheRead: 0.06, cacheWrite: 0.375 },
@@ -158,7 +171,10 @@ describe("models", () => {
 		}
 	});
 
-	it("marks M3 as multimodal and M2.x as text-only", () => {
+	it("marks M3 and M3.1 as multimodal and M2.x as text-only", () => {
+		const m31 = MODELS.find((m) => m.id === "MiniMax-M3.1-Flash");
+		expect(m31?.input).toEqual(["text", "image"]);
+
 		const m3 = MODELS.find((m) => m.id === "MiniMax-M3");
 		expect(m3?.input).toEqual(["text", "image"]);
 
@@ -170,7 +186,7 @@ describe("models", () => {
 
 	it("flags highspeed variants with speed=\"highspeed\"", () => {
 		const highspeed = MODELS.filter((m) => m.id.endsWith("-highspeed"));
-		const standard = MODELS.filter((m) => !m.id.endsWith("-highspeed") && m.id !== "MiniMax-M3");
+		const standard = MODELS.filter((m) => !m.id.endsWith("-highspeed") && m.id !== "MiniMax-M3" && m.id !== "MiniMax-M3.1-Flash");
 		for (const model of highspeed) {
 			expect(model.speed).toBe("highspeed");
 		}
@@ -455,9 +471,9 @@ describe("provider registration", () => {
 		expect(provider("minimax-cn").config.baseUrl).toBe("https://api.minimaxi.com/anthropic");
 	});
 
-	it("wires anthropicMessagesApi().streamSimple as the streaming implementation", () => {
+	it("lets Pi handle anthropic-messages streaming natively without an overriding streamSimple", () => {
 		const streamSimple = provider().config.streamSimple;
-		expect(typeof streamSimple).toBe("function");
+		expect(streamSimple).toBeUndefined();
 	});
 
 	it("registers the full extension model list for both regions", () => {
@@ -476,13 +492,24 @@ describe("provider registration", () => {
 		}
 	});
 
-	it("enables compat.forceAdaptiveThinking on M3 only", () => {
+	it("enables compat.forceAdaptiveThinking and configures thinkingLevelMap", () => {
 		const registered = provider().config.models ?? [];
 		for (const model of registered) {
-			if (model.id === "MiniMax-M3") {
+			if (model.id === "MiniMax-M3" || model.id === "MiniMax-M3.1-Flash") {
 				expect(model.compat).toEqual({ forceAdaptiveThinking: true });
 			} else {
 				expect(model.compat).toBeUndefined();
+			}
+			if (model.id === "MiniMax-M3.1-Flash") {
+				expect((model as { thinkingLevelMap?: Record<string, string | null> }).thinkingLevelMap).toEqual({
+					off: null,
+					minimal: null,
+					low: "low",
+					medium: "medium",
+					high: "high",
+					xhigh: "xhigh",
+					max: "max",
+				});
 			}
 		}
 	});

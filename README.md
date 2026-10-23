@@ -20,6 +20,7 @@ A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for 
 
 | Model | Context | Output | Input | Description |
 |-------|---------|--------|-------|-------------|
+| MiniMax-M3.1-Flash | 1,000,000 | up to 524,288 | text, image | Frontier multimodal MoE model with 1M context and adaptive thinking |
 | MiniMax-M3 | 1,000,000 | up to 524,288 | text, image | Frontier multimodal coding model with 1M context and adaptive thinking |
 | MiniMax-M2.7 | 204,800 | up to 65,536 | text | Latest flagship with recursive self-improvement (~60 tps) |
 | MiniMax-M2.7-highspeed | 204,800 | up to 65,536 | text | Same as M2.7 with higher output speed (~100 tps) |
@@ -30,7 +31,7 @@ A [Pi coding agent](https://github.com/badlogic/pi-mono) provider extension for 
 | MiniMax-M2 | 204,800 | up to 65,536 | text | Agentic capabilities, advanced reasoning (~60 tps) |
 
 Notes:
-- M3 supports image and video input directly. Only `text` and `image` are exposed to Pi today.
+- M3.1 Flash and M3 support image and video input directly. Only `text` and `image` are exposed to Pi today.
 - M2 series do not accept image or video input; the provider only declares `text`.
 - M2 series `max_tokens` field is configured to MiniMax's recommended cap (65,536). The hard API maximum is 204,800; the provider can pass that through if requested via Pi's per-request `maxTokens` option.
 
@@ -209,6 +210,7 @@ Pricing is approximate and in USD per million tokens for pay-as-you-go standard 
 
 | Model | Input | Output | Cache Read | Cache Write |
 |-------|-------|--------|------------|-------------|
+| MiniMax-M3.1-Flash | $0.15 | $0.60 | $0.015 | Not listed / no passive-cache write charge |
 | M3 ≤512k input tokens | $0.30 | $1.20 | $0.06 | Not listed / no passive-cache write charge |
 | M3 >512k input tokens | $0.60 | $2.40 | $0.12 | Not listed / no passive-cache write charge |
 | M2.7 | $0.30 | $1.20 | $0.06 | $0.375 |

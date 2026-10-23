@@ -21,7 +21,6 @@
 import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/compat";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { MiniMaxSDK, type Region } from "mmx-cli/sdk";
@@ -52,11 +51,33 @@ interface MiniMaxModel {
 	maxTokens: number;
 	description: string;
 	speed: "standard" | "highspeed";
+	thinkingLevelMap?: Record<string, string | null>;
 }
 
 
 
 export const MODELS: MiniMaxModel[] = [
+	// MiniMax M3.1 Series
+	{
+		id: "MiniMax-M3.1-Flash",
+		name: "MiniMax M3.1 Flash",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0.15, output: 0.60, cacheRead: 0.015, cacheWrite: 0 },
+		contextWindow: 1000000,
+		maxTokens: 524288,
+		description: "Frontier multimodal MoE model with 1M context window and adaptive thinking",
+		speed: "standard",
+		thinkingLevelMap: {
+			off: null,
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		},
+	},
 	// MiniMax M3
 	{
 		id: "MiniMax-M3",
@@ -653,11 +674,10 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		},
 	});
 
-	const api = anthropicMessagesApi();
 	const models = () => MODELS.map((m) => {
-		// M3 supports adaptive thinking; M2 series are budget-based. The SDK's
+		// M3 and M3.1 series support adaptive thinking; M2 series are budget-based. The SDK's
 		// Anthropic implementation handles both when this compatibility flag is set.
-		const compat = m.id === "MiniMax-M3" ? { forceAdaptiveThinking: true } : undefined;
+		const compat = (m.id === "MiniMax-M3" || m.id === "MiniMax-M3.1-Flash") ? { forceAdaptiveThinking: true } : undefined;
 		return {
 			id: m.id,
 			name: m.name,
@@ -666,6 +686,7 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 			cost: m.cost,
 			contextWindow: m.contextWindow,
 			maxTokens: m.maxTokens,
+			...(m.thinkingLevelMap ? { thinkingLevelMap: m.thinkingLevelMap } : {}),
 			...(compat ? { compat } : {}),
 		};
 	});
@@ -676,7 +697,6 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		baseUrl: getMiniMaxApiBase(),
 		apiKey: "$MINIMAX_API_KEY",
 		api: "anthropic-messages",
-		streamSimple: api.streamSimple,
 		models: models(),
 	});
 
@@ -685,7 +705,6 @@ export default function (pi: ExtensionAPI, sdkFactory: MiniMaxSdkFactory = creat
 		baseUrl: getMiniMaxCnApiBase(),
 		apiKey: "$MINIMAX_CN_API_KEY",
 		api: "anthropic-messages",
-		streamSimple: api.streamSimple,
 		models: models(),
 	});
 }
